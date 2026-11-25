@@ -791,15 +791,9 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
             &identity.identity_private_key_b64,
         ),
     ]);
-    // Presence is the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6):
-    // this daemon says so itself, signed, every 30 s, and the relay reports
-    // nothing about any device. What it says is that this device can be
-    // REACHED, which is the question `online` is read as answering: the beat
-    // goes out only while the relay loop below holds an authenticated socket,
-    // because that socket is the only way in. A bridge that is running, and can
-    // still reach the api, and has no relay socket is a bridge no browser can
-    // open a session to — and saying "online" for it is what had this account
-    // dialling two machines that were never going to answer.
+    // The API derives presence from signed beats on the liveness runtime.
+    // Relay and hosted HTTPS publish their own reachability for browser access
+    // and for the agent resume path.
     let reachable = Reachability::unreachable();
     spawn_update_heartbeat(&runtime.config, app.clone());
     // The service manager's stderr file, rotated rather than left to grow.
@@ -861,8 +855,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         build_bridge::harness::secret_profile_registry_root(&runtime.harness_context.state_root),
     )
     .await;
-    // The relay socket, redialled for as long as the daemon runs, on the
-    // liveness runtime. The main thread waits for the signal that ends the
+    // The relay socket redials on the liveness runtime while RTC is allowed. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
     // ending the way every other end does (`relay::RelayConnection`'s drop).
     // Dialled before the services below are started, so the socket does not
@@ -912,8 +905,8 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // Walks a workspace's size on disk when the Workspaces tab asks (#273).
     AppState::spawn_workspace_sizes(app.clone());
 
-    // Bring back whoever the last shutdown was holding. It waits for an
-    // authenticated relay socket rather than firing here, because a resumed
+    // Bring back whoever the last shutdown was holding. Wait for browser
+    // reachability before resuming, because a resumed
     // agent starts talking immediately and the human has to be able to SEE it:
     // a bridge no browser can reach is one whose agents work in the dark.
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());

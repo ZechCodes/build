@@ -229,6 +229,7 @@ impl Services {
         let mut revision = self.transport.revision.subscribe();
         let mut assignments = Assignments::default();
         let mut schedule = ClaimSchedule::new();
+        let mut retire_personal = self.has_retired_personal_origin(report.mode);
         loop {
             revision.borrow_and_update();
             let Some(result) =
@@ -238,7 +239,14 @@ impl Services {
             };
 
             let delay = schedule.delay(&result);
+            if matches!(&result, Ok(Reply::Assigned(_))) {
+                // The new hosted registration supersedes the personal epoch.
+                retire_personal = false;
+            }
             self.apply(result, &mut assignments, &personal_ready).await;
+            if retire_personal {
+                retire_personal = !self.retire_personal_origin(&mut shutdown).await;
+            }
             let due = Instant::now() + delay;
             let wait = wait_for_claim(due, &mut revision, &mut personal_ready, &self.transport);
             if supervisor::prepare_or_shutdown(wait, &mut shutdown)
@@ -250,6 +258,28 @@ impl Services {
         }
         assignments.stop().await;
         Ok(())
+    }
+
+    fn has_retired_personal_origin(&self, mode: OriginMode) -> bool {
+        mode == OriginMode::Hosted
+            && EndpointRecord::current(&self.state_path)
+                .ok()
+                .flatten()
+                .is_some_and(|record| {
+                    record.policy.device_id == self.identity.device_id
+                        && record.policy.assignment_generation.is_none()
+                        && (record.enabled
+                            || record.registered_epoch.as_deref() != Some(&record.endpoint_epoch))
+                })
+    }
+
+    async fn retire_personal_origin(&self, shutdown: &mut watch::Receiver<bool>) -> bool {
+        let registration = supervisor::reconcile_disabled(&self.identity, self.state_path.clone());
+        let attempt = tokio::time::timeout(Duration::from_secs(5), registration);
+        matches!(
+            supervisor::prepare_or_shutdown(attempt, shutdown).await,
+            Some(Ok(Ok(())))
+        )
     }
 
     async fn apply(

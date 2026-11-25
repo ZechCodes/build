@@ -1,24 +1,6 @@
-//! Whether this device can be reached — the one fact the relay socket and the
-//! heartbeat have to agree on.
-//!
-//! `online` in the account's device list is read as "I can dial this machine".
-//! It used to answer a different question: the heartbeat task was started once
-//! at boot and posted to the api over its own HTTPS connection, knowing nothing
-//! about the relay socket a browser actually finds the device on. So a bridge
-//! whose relay socket had been severed kept beating, the api kept saying
-//! online, the browser kept dialling, and the relay kept answering that it
-//! holds no such device.
-//!
-//! This is the flag that closes that gap. The relay client raises it when the
-//! relay has authenticated the socket and drops it the moment that socket ends,
-//! however it ends; `presence.rs` beats only while it is raised. Presence
-//! stays the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6) — the
-//! relay still reports nothing about any device — but what the device reports
-//! about itself is now reachability rather than mere liveness.
-//!
-//! The flag is also something to wait on ([`Reachability::watch`]): the beat
-//! goes out the moment the relay authenticates the socket rather than at its
-//! next tick, which on a cold start was a whole interval away (#321).
+//! Browser reachability from relay signaling or the hosted HTTPS endpoint.
+//! Each transport owns its flag. The aggregate wakes presence and resume
+//! when either transport becomes reachable.
 
 use std::sync::{Arc, Mutex};
 
@@ -51,10 +33,7 @@ impl Default for Reachability {
 }
 
 impl Reachability {
-    /// A device nobody has reached yet. The default is the under-reporting one
-    /// on purpose: a bridge that has never been authenticated by a relay cannot
-    /// be dialled, and saying so costs one heartbeat window, while the opposite
-    /// mistake costs a browser that dials a machine that is not there.
+    /// A device with no authenticated relay or acknowledged hosted endpoint.
     pub fn unreachable() -> Self {
         Self::default()
     }

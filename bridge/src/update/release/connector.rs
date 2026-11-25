@@ -40,13 +40,12 @@ pub(crate) async fn install(
     if executable.exists() || override_path.is_some() {
         let executable = executable.clone();
         return tokio::task::spawn_blocking(move || {
-            validate_existing(&sums, &name, &executable)?;
-            if executable == destination {
-                return Ok(destination);
-            }
-            let bytes = read_executable(&executable)?;
+            let managed = executable == destination;
+            let bytes = read_executable(&executable, managed)?;
             verify_pin(&sums, &bytes, &name)?;
-            install_atomic(&destination, &bytes)?;
+            if !managed {
+                install_atomic(&destination, &bytes)?;
+            }
             Ok(destination)
         })
         .await
@@ -69,10 +68,20 @@ pub(crate) async fn install(
 fn initialize_directory(directory: &Path) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt;
     let mut builder = fs::DirBuilder::new();
-    builder.mode(0o700).recursive(true);
-    builder
-        .create(directory)
-        .map_err(|_| "cannot create connector install directory")?;
+    builder.mode(0o700);
+    let parent = directory.parent().ok_or("missing connector install root")?;
+    for path in [parent, directory] {
+        match builder.create(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err("cannot create connector install directory".into()),
+        }
+        validate_directory(path)?;
+    }
+    Ok(())
+}
+
+fn validate_directory(directory: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(directory)
         .map_err(|_| "cannot inspect connector install directory")?;
     if !metadata.is_dir()
@@ -125,8 +134,8 @@ async fn verify_manifest(
     tag: String,
 ) -> Result<Vec<u8>, String> {
     tokio::task::spawn_blocking(move || {
-        let bytes = read_regular(&sums, MAX_MANIFEST, false)?;
-        read_regular(&bundle, MAX_MANIFEST, false)?;
+        let bytes = read_regular(&sums, MAX_MANIFEST)?;
+        read_regular(&bundle, MAX_MANIFEST)?;
         verify_signature(&cosign, &sums, &bundle, &tag)?;
         Ok(bytes)
     })
@@ -134,19 +143,29 @@ async fn verify_manifest(
     .map_err(|_| "connector manifest verification worker failed")?
 }
 
-fn validate_existing(sums: &[u8], name: &str, path: &Path) -> Result<(), String> {
-    let bytes = read_executable(path)?;
-    verify_pin(sums, &bytes, name)
-}
-
-fn read_executable(path: &Path) -> Result<Vec<u8>, String> {
+fn read_executable(path: &Path, managed: bool) -> Result<Vec<u8>, String> {
     if !path.is_absolute() || path.canonicalize().ok().as_deref() != Some(path) {
         return Err("connector executable must be an absolute, unaliased path".into());
     }
-    read_regular(path, MAX_CONNECTOR, true)
+    let (file, metadata) = open_regular(path)?;
+    if metadata.mode() & 0o111 == 0 || (managed && !private_executable(&metadata)) {
+        return Err("connector executable has unsafe ownership or permissions".into());
+    }
+    read_bounded(file, MAX_CONNECTOR)
 }
 
-fn read_regular(path: &Path, limit: usize, executable: bool) -> Result<Vec<u8>, String> {
+fn private_executable(metadata: &fs::Metadata) -> bool {
+    metadata.uid() == rustix::process::geteuid().as_raw()
+        && metadata.mode() & 0o7777 == 0o700
+        && metadata.nlink() == 1
+}
+
+fn read_regular(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    let (file, _) = open_regular(path)?;
+    read_bounded(file, limit)
+}
+
+fn open_regular(path: &Path) -> Result<(fs::File, fs::Metadata), String> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -155,9 +174,13 @@ fn read_regular(path: &Path, limit: usize, executable: bool) -> Result<Vec<u8>, 
     let metadata = file
         .metadata()
         .map_err(|_| "cannot inspect connector asset")?;
-    if !metadata.is_file() || (executable && metadata.mode() & 0o100 == 0) {
+    if !metadata.is_file() {
         return Err("connector asset has an unsafe file type or mode".into());
     }
+    Ok((file, metadata))
+}
+
+fn read_bounded(file: fs::File, limit: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)

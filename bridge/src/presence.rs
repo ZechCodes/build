@@ -10,13 +10,10 @@
 //! so a bridge that is killed, unplugged or partitioned needs no goodbye — it
 //! simply stops beating.
 //!
-//! What the beat asserts is that this device can be *reached*, not that its
-//! process is running: it goes out only while the daemon holds a relay socket
-//! the relay has authenticated ([`crate::reachability::Reachability`]). A bridge
-//! that is alive and can still reach the api, but whose relay socket has been
-//! severed, cannot be dialled by any browser — so it says nothing, and the api
-//! lets it go a window later. Saying "online" for that bridge is what had a
-//! browser dialling a machine the relay held no socket for, over and over.
+//! WebRTC presence follows the authenticated relay socket. An acknowledged
+//! hosted endpoint can also make the bridge reachable. When the bridge stops
+//! dialing the relay for hosted mode, the signed heartbeat continues through
+//! connector outages so a policy revision can trigger a fresh issuer claim.
 //!
 //! Best effort and unkillable, in that order: a refused, unreachable or hung
 //! api is logged and the loop beats on. Nothing above this waits on it.
@@ -296,9 +293,8 @@ impl Beat {
                 }
             }
             self.came_round(interval);
-            // Silence is the whole report for a device nothing can reach: the
-            // api needs no "offline" post, and one it could not act on from a
-            // bridge with no way in is exactly the lie this loop used to tell.
+            // Free and personal bridges retain relay-backed presence.
+            // Hosted bridges keep receiving issuer revision hints during outages.
             if !self.reachable.is_reachable() && !self.uses_hosted_heartbeat() {
                 continue;
             }

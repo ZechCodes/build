@@ -81,7 +81,7 @@ impl Session {
         let result = async {
             let private = PrivateRuntime::open(runtime)?;
             if private.quarantined(self.assignment.generation)? {
-                return Ok(());
+                return self.withdraw_quarantined(stop).await;
             }
             self.supervise(&private, stop).await
         }
@@ -114,7 +114,7 @@ impl Session {
                     crate::logline::say(
                         "hosted HTTPS stopped after unsafe connector configuration or output",
                     );
-                    break;
+                    return self.withdraw_quarantined(stop).await;
                 }
                 Ok(Attempt::Retry) => {
                     crate::logline::say("hosted HTTPS connector disconnected");
@@ -287,7 +287,22 @@ impl Session {
         Ok(signer)
     }
 
+    async fn withdraw_quarantined(&self, mut stop: watch::Receiver<bool>) -> Result<(), String> {
+        // Retry the issuer acknowledgement even after the child has been
+        // permanently stopped. A fresh claim for another assignment can cancel
+        // this retirement before it reserves the new endpoint generation.
+        prepare_or_shutdown(self.withdraw(), &mut stop)
+            .await
+            .unwrap_or(Ok(()))
+    }
+
     async fn withdraw(&self) -> Result<(), String> {
+        let state = EndpointRecord::current(&self.services.state_path)?;
+        if !state.is_some_and(|record| {
+            record.policy.assignment_generation == Some(self.assignment.generation)
+        }) {
+            return Ok(());
+        }
         let record = prepare_record_enabled(&self.services.state_path, None, false)
             .await?
             .ok_or("hosted endpoint intent was not persisted")?;

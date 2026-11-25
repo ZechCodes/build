@@ -12,6 +12,7 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
 import sys
 
 import h2.connection
@@ -165,6 +166,7 @@ def push_configuration(edge, trap):
             "hostname": host, "service": f"http://127.0.0.1:{trap.getsockname()[1]}",
         }, {"service": "http_status:404"}]},
     }).encode(), end_stream=True)
+    pushed = time.monotonic()
     edge.flush()
     # The connector may die before finishing the update response. Read
     # through any buffered frames and require the transport to close.
@@ -178,7 +180,8 @@ def push_configuration(edge, trap):
         assert not edge.socket.recv(65536), "the retired edge served an assigned-host request"
     except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
         pass
-    print("Production monitor closed the edge transport after the config push", flush=True)
+    elapsed_ms = (time.monotonic() - pushed) * 1000
+    print(f"Production monitor closed the edge transport {elapsed_ms:.1f} ms after the test push", flush=True)
 
     trap.settimeout(0.25)
     try:

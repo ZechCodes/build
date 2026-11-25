@@ -101,29 +101,37 @@ impl PrivateRuntime {
         if self.quarantined(generation)? {
             return Ok(());
         }
-        self.write(
-            &format!("rejected-{generation}"),
-            b"edge configuration or output refused\n",
-        )
+        let name = format!("rejected-{generation}");
+        let mut file = self.create(&name)?;
+        file.write_all(b"edge configuration or output refused\n")
+            .and_then(|()| file.sync_all())
+            .and_then(|()| File::open(&self.path)?.sync_all())
+            .map_err(|_| "cannot persist connector quarantine marker".into())
     }
 
     pub fn clean_inputs(&self) -> Result<(), String> {
-        for name in [CONFIG, CREDENTIALS, CA] {
-            remove_owned(&self.path.join(name))?;
-        }
-        Ok(())
+        [CREDENTIALS, CONFIG, CA]
+            .into_iter()
+            .fold(Ok(()), |result, name| {
+                let removed = remove_owned(&self.path.join(name));
+                result.and(removed)
+            })
     }
 
     fn write(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        let mut file = OpenOptions::new()
+        self.create(name)?
+            .write_all(bytes)
+            .map_err(|_| "cannot write private connector file".into())
+    }
+
+    fn create(&self, name: &str) -> Result<File, String> {
+        OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(self.path.join(name))
-            .map_err(|_| "cannot create private connector file")?;
-        file.write_all(bytes)
-            .map_err(|_| "cannot write private connector file".into())
+            .map_err(|_| "cannot create private connector file".into())
     }
 }
 

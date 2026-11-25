@@ -434,6 +434,7 @@ fn endpoint_epoch_survives_restart_rotates_on_policy_disable_and_tracks_registra
         origin: "https://bridge.example".into(),
         allowed_origins: vec!["https://app.example".into()],
         certificate_fingerprint: "certificate".into(),
+        assignment_generation: None,
     };
     assert!(EndpointRecord::prepare(&path, None).unwrap().is_none());
     let first = EndpointRecord::prepare(&path, Some(policy.clone()))

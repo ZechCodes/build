@@ -106,21 +106,14 @@ fn valid_dns_host(host: &str) -> bool {
 }
 
 /// Keeps keys out of Debug/logging and permits only the three reviewed purposes.
-pub struct DeviceProofSigner {
+pub(super) struct PairedDeviceProof {
     device_id: String,
     issuer: CanonicalOrigin,
-    origin: CanonicalOrigin,
-    endpoint_epoch: String,
     key: EncodingKey,
 }
 
-impl DeviceProofSigner {
-    pub fn new(
-        identity: &StoredIdentity,
-        issuer: &str,
-        origin: CanonicalOrigin,
-        endpoint_epoch: String,
-    ) -> Result<Self, ProofError> {
+impl PairedDeviceProof {
+    pub(super) fn new(identity: &StoredIdentity, issuer: &str) -> Result<Self, ProofError> {
         let issuer = CanonicalOrigin::parse(issuer)?;
         let approved_by = CanonicalOrigin::parse(
             identity
@@ -136,7 +129,6 @@ impl DeviceProofSigner {
         if device_id.hyphenated().to_string() != identity.device_id {
             return Err(ProofError::InvalidInput);
         }
-        bounded(&endpoint_epoch, 128)?;
         let seed = STANDARD_NO_PAD
             .decode(identity.identity_private_key_b64.trim_end_matches('='))
             .map_err(|_| ProofError::Signing)?;
@@ -149,17 +141,73 @@ impl DeviceProofSigner {
         Ok(Self {
             device_id: identity.device_id.clone(),
             issuer,
-            origin,
-            endpoint_epoch,
             key: EncodingKey::from_ed_der(der.as_ref()),
         })
     }
 
-    pub fn device_id(&self) -> &str {
+    pub(super) fn device_id(&self) -> &str {
         &self.device_id
     }
-    pub fn issuer(&self) -> &str {
+
+    pub(super) fn issuer(&self) -> &str {
         self.issuer.as_str()
+    }
+
+    pub(super) fn sign(
+        &self,
+        purpose: &str,
+        audience: String,
+        now: u64,
+        mut fields: serde_json::Value,
+    ) -> Result<String, ProofError> {
+        let expiration = now.checked_add(30).ok_or(ProofError::InvalidInput)?;
+        let object = fields.as_object_mut().ok_or(ProofError::InvalidInput)?;
+        object.extend(serde_json::json!({"iss":self.device_id,"sub":self.device_id,"aud":audience,"iat":now,"exp":expiration,"jti":uuid::Uuid::new_v4().to_string()}).as_object().unwrap().clone());
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.typ = Some(purpose.to_owned());
+        jsonwebtoken::encode(&header, &fields, &self.key).map_err(|_| ProofError::Signing)
+    }
+}
+
+pub struct DeviceProofSigner {
+    paired: PairedDeviceProof,
+    origin: CanonicalOrigin,
+    endpoint_epoch: String,
+    assignment_generation: Option<u64>,
+}
+
+impl DeviceProofSigner {
+    pub fn new(
+        identity: &StoredIdentity,
+        issuer: &str,
+        origin: CanonicalOrigin,
+        endpoint_epoch: String,
+    ) -> Result<Self, ProofError> {
+        bounded(&endpoint_epoch, 128)?;
+        Ok(Self {
+            paired: PairedDeviceProof::new(identity, issuer)?,
+            origin,
+            endpoint_epoch,
+            assignment_generation: None,
+        })
+    }
+
+    pub(super) fn set_assignment_generation(&mut self, generation: Option<u64>) {
+        self.assignment_generation = generation;
+    }
+
+    fn registration_fields(&self, mut fields: serde_json::Value) -> serde_json::Value {
+        if let Some(generation) = self.assignment_generation {
+            fields["assignment_generation"] = generation.into();
+        }
+        fields
+    }
+
+    pub fn device_id(&self) -> &str {
+        self.paired.device_id()
+    }
+    pub fn issuer(&self) -> &str {
+        self.paired.issuer()
     }
     pub fn origin(&self) -> &str {
         self.origin.as_str()
@@ -168,18 +216,18 @@ impl DeviceProofSigner {
         &self.endpoint_epoch
     }
     pub fn introspection_url(&self) -> String {
-        format!("{}/api/bridge-http/introspect", self.issuer)
+        format!("{}/api/bridge-http/introspect", self.paired.issuer)
     }
     pub fn registration_url(&self) -> String {
         format!(
             "{}/api/devices/{}/http-endpoint",
-            self.issuer, self.device_id
+            self.paired.issuer, self.paired.device_id
         )
     }
 
     /// Only nonce allocation at the paired issuer; no caller-selected claims.
     pub fn registration_challenge_assertion(&self, now: u64) -> Result<String, ProofError> {
-        self.sign(
+        self.paired.sign(
             "build-http-registration-challenge+jwt",
             format!("{}/challenge", self.registration_url()),
             now,
@@ -195,8 +243,8 @@ impl DeviceProofSigner {
     ) -> Result<String, ProofError> {
         bounded(challenge_id, 128)?;
         bounded(nonce, 256)?;
-        self.sign("build-http-discovery+jwt", format!("{}/api/bridge-discovery/complete", self.issuer), now,
-            serde_json::json!({"challenge_id":challenge_id,"nonce":nonce,"origin":self.origin,"issuer":self.issuer,"endpoint_epoch":self.endpoint_epoch}))
+        self.paired.sign("build-http-discovery+jwt", format!("{}/api/bridge-discovery/complete", self.paired.issuer), now,
+            serde_json::json!({"challenge_id":challenge_id,"nonce":nonce,"origin":self.origin,"issuer":self.paired.issuer,"endpoint_epoch":self.endpoint_epoch}))
     }
 
     pub fn registration_proof(
@@ -212,8 +260,8 @@ impl DeviceProofSigner {
         if let Some(epoch) = previous_epoch {
             bounded(epoch, 128)?;
         }
-        self.sign("build-http-registration+jwt",self.registration_url(),now,
-            serde_json::json!({"challenge_id":challenge_id,"nonce":nonce,"origin":self.origin,"endpoint_epoch":self.endpoint_epoch,"previous_endpoint_epoch":previous_epoch,"enabled":enabled}))
+        self.paired.sign("build-http-registration+jwt",self.registration_url(),now,
+            self.registration_fields(serde_json::json!({"challenge_id":challenge_id,"nonce":nonce,"origin":self.origin,"endpoint_epoch":self.endpoint_epoch,"previous_endpoint_epoch":previous_epoch,"enabled":enabled})))
     }
 
     pub fn registration_proof_candidates(
@@ -237,18 +285,18 @@ impl DeviceProofSigner {
                 return Err(ProofError::InvalidInput);
             }
         }
-        self.sign(
+        self.paired.sign(
             "build-http-registration+jwt",
             self.registration_url(),
             now,
-            serde_json::json!({
+            self.registration_fields(serde_json::json!({
                 "challenge_id": challenge_id,
                 "nonce": nonce,
                 "origin": self.origin,
                 "endpoint_epoch": self.endpoint_epoch,
                 "previous_endpoint_epochs": previous_epochs,
                 "enabled": enabled,
-            }),
+            })),
         )
     }
 
@@ -264,27 +312,12 @@ impl DeviceProofSigner {
         {
             return Err(ProofError::InvalidInput);
         }
-        self.sign(
+        self.paired.sign(
             "build-http-introspection+jwt",
             self.introspection_url(),
             now,
             serde_json::json!({"token_hash":token_hash}),
         )
-    }
-
-    fn sign(
-        &self,
-        purpose: &str,
-        audience: String,
-        now: u64,
-        mut fields: serde_json::Value,
-    ) -> Result<String, ProofError> {
-        let expiration = now.checked_add(30).ok_or(ProofError::InvalidInput)?;
-        let object = fields.as_object_mut().ok_or(ProofError::InvalidInput)?;
-        object.extend(serde_json::json!({"iss":self.device_id,"sub":self.device_id,"aud":audience,"iat":now,"exp":expiration,"jti":uuid::Uuid::new_v4().to_string()}).as_object().unwrap().clone());
-        let mut header = Header::new(Algorithm::EdDSA);
-        header.typ = Some(purpose.to_owned());
-        jsonwebtoken::encode(&header, &fields, &self.key).map_err(|_| ProofError::Signing)
     }
 }
 
@@ -407,7 +440,7 @@ pub(super) async fn bounded_json<T: serde::de::DeserializeOwned>(
     if !response.status().is_success() {
         return Err(ProofError::Refused);
     }
-    let mut bytes = Vec::new();
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
     while let Some(chunk) = response
         .chunk()
         .await

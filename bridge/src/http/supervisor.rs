@@ -30,8 +30,41 @@ pub async fn run(
     default_allowed_origin: String,
     state_path: PathBuf,
     execution: Arc<ExecutionService>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
+    run_with_ready(
+        settings,
+        identity,
+        issuer,
+        default_allowed_origin,
+        state_path,
+        execution,
+        HttpSignals {
+            shutdown,
+            ready: None,
+        },
+    )
+    .await
+}
+
+pub struct HttpSignals {
+    pub shutdown: watch::Receiver<bool>,
+    pub ready: Option<watch::Sender<bool>>,
+}
+
+pub async fn run_with_ready(
+    settings: Option<HttpSettings>,
+    identity: StoredIdentity,
+    issuer: String,
+    default_allowed_origin: String,
+    state_path: PathBuf,
+    execution: Arc<ExecutionService>,
+    signals: HttpSignals,
+) -> Result<(), String> {
+    let HttpSignals {
+        mut shutdown,
+        ready,
+    } = signals;
     let preparation = async {
         match settings {
             Some(settings) => PreparedHttp::prepare(
@@ -50,7 +83,16 @@ pub async fn run(
         }
     };
     match prepare_or_shutdown(preparation, &mut shutdown).await {
-        Some(Ok(Some(prepared))) => prepared.serve(shutdown).await,
+        Some(Ok(Some(prepared))) => {
+            if let Some(ready) = &ready {
+                ready.send_replace(true);
+            }
+            let result = prepared.serve(shutdown).await;
+            if let Some(ready) = ready {
+                ready.send_replace(false);
+            }
+            result
+        }
         Some(Ok(None)) => {
             wait_for_shutdown(&mut shutdown).await;
             Ok(())
@@ -60,7 +102,7 @@ pub async fn run(
     }
 }
 
-async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     while !*shutdown.borrow_and_update() {
         if shutdown.changed().await.is_err() {
             break;
@@ -68,7 +110,7 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn prepare_or_shutdown<T>(
+pub(super) async fn prepare_or_shutdown<T>(
     preparation: impl std::future::Future<Output = T>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Option<T> {
@@ -89,7 +131,6 @@ pub struct PreparedHttp {
 
 struct DisableContext {
     identity: StoredIdentity,
-    issuer: String,
     origin: CanonicalOrigin,
     state_path: PathBuf,
     restart_invocation: Option<String>,
@@ -103,7 +144,7 @@ fn restart_invocation(state_path: &Path) -> Option<String> {
     }
 }
 
-async fn prepare_listener<F, Fut>(
+pub(super) async fn prepare_listener<F, Fut>(
     bind: std::net::SocketAddr,
     register_and_acknowledge: F,
 ) -> Result<tokio::net::TcpListener, String>
@@ -172,6 +213,7 @@ impl PreparedHttp {
             origin: origin.as_str().to_owned(),
             allowed_origins: allowed_origins.clone(),
             certificate_fingerprint,
+            assignment_generation: None,
         };
         let record = prepare_record(&state_path, Some(desired))
             .await?
@@ -207,7 +249,6 @@ impl PreparedHttp {
             runtime,
             disable: DisableContext {
                 identity: identity.clone(),
-                issuer: issuer.as_str().to_owned(),
                 origin,
                 state_path,
                 restart_invocation,
@@ -251,15 +292,7 @@ pub async fn reconcile_disabled(
     };
     let origin = CanonicalOrigin::parse(&record.policy.origin)
         .map_err(|error| format!("invalid persisted HTTP origin: {error}"))?;
-    let signer = Arc::new(
-        DeviceProofSigner::new(
-            identity,
-            &record.policy.issuer,
-            origin,
-            record.endpoint_epoch.clone(),
-        )
-        .map_err(|error| format!("cannot construct HTTP disable signer: {error}"))?,
-    );
+    let signer = endpoint_signer(identity, origin, &record)?;
     let registrar = EndpointRegistrar::new(signer)
         .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
     register_generation(&registrar, &record, false).await;
@@ -284,13 +317,8 @@ impl DisableContext {
                 return;
             }
         };
-        let signer = match DeviceProofSigner::new(
-            &self.identity,
-            &self.issuer,
-            self.origin,
-            record.endpoint_epoch.clone(),
-        ) {
-            Ok(signer) => Arc::new(signer),
+        let signer = match endpoint_signer(&self.identity, self.origin, &record) {
+            Ok(signer) => signer,
             Err(error) => {
                 eprintln!("HTTP endpoint disable signer failed: {error}");
                 return;
@@ -308,11 +336,27 @@ impl DisableContext {
     }
 }
 
+pub(super) fn endpoint_signer(
+    identity: &StoredIdentity,
+    origin: CanonicalOrigin,
+    record: &EndpointRecord,
+) -> Result<Arc<DeviceProofSigner>, String> {
+    let mut signer = DeviceProofSigner::new(
+        identity,
+        &record.policy.issuer,
+        origin,
+        record.endpoint_epoch.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    signer.set_assignment_generation(record.policy.assignment_generation);
+    Ok(Arc::new(signer))
+}
+
 /// Atomically name every bounded generation this exact device/issuer may have
 /// committed, including the desired generation for response-loss recovery.
 /// The hosted CAS refuses any unknown external generation. Backoff retries
 /// reuse this prepared record and candidate set, including after Conflict.
-async fn register_generation(
+pub(super) async fn register_generation(
     registrar: &EndpointRegistrar,
     record: &EndpointRecord,
     enabled: bool,
@@ -381,12 +425,23 @@ async fn prepare_record(
     path: &Path,
     desired: Option<EndpointPolicy>,
 ) -> Result<Option<EndpointRecord>, String> {
+    let enabled = desired.is_some();
+    prepare_record_enabled(path, desired, enabled).await
+}
+
+pub(super) async fn prepare_record_enabled(
+    path: &Path,
+    desired: Option<EndpointPolicy>,
+    enabled: bool,
+) -> Result<Option<EndpointRecord>, String> {
     for attempt in 0..STATE_RETRIES {
         let path = path.to_owned();
         let desired = desired.clone();
-        let result = tokio::task::spawn_blocking(move || EndpointRecord::prepare(&path, desired))
-            .await
-            .map_err(|_| "HTTP endpoint state worker failed".to_string())?;
+        let result = tokio::task::spawn_blocking(move || {
+            EndpointRecord::prepare_enabled(&path, desired, enabled)
+        })
+        .await
+        .map_err(|_| "HTTP endpoint state worker failed".to_string())?;
         match result {
             Err(error) if error == "HTTP endpoint state is busy" && attempt + 1 < STATE_RETRIES => {
                 tokio::time::sleep(Duration::from_millis(25 * (attempt as u64 + 1))).await;
@@ -397,7 +452,7 @@ async fn prepare_record(
     unreachable!()
 }
 
-async fn acknowledge_record(path: &Path, record: EndpointRecord) -> Result<(), String> {
+pub(super) async fn acknowledge_record(path: &Path, record: EndpointRecord) -> Result<(), String> {
     for attempt in 0..STATE_RETRIES {
         let path = path.to_owned();
         let record = record.clone();
@@ -427,10 +482,12 @@ mod tests {
                 origin: "https://device.example".into(),
                 allowed_origins: vec!["https://account.example".into()],
                 certificate_fingerprint: "certificate".into(),
+                assignment_generation: None,
             },
             endpoint_epoch: "desired".into(),
             enabled: true,
             registered_epoch: Some("previous".into()),
+            hosted_ready_once: false,
             unacknowledged_epochs: Vec::new(),
         }
     }

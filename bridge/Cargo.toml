@@ -30,7 +30,7 @@ notify = "6"
 # (`watch.rs`): root `.gitignore`, `.git/info/exclude`, global excludes. Only
 # the matcher is used, never the walker.
 ignore = "0.4"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal", "process"] }
 # `rustls-tls-webpki-roots`: outbound wss:// (production relay) via rustls with
 # bundled webpki roots — no OpenSSL/native-tls, works in scratch containers.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
@@ -59,10 +59,11 @@ aws-lc-rs = "=1.17.0"
 # reqwest brings aws-lc-rs, webrtc's rtc brings ring — so rustls 0.23 cannot
 # pick one on its own and the daemon installs this one at startup.
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+rcgen = "0.13"
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
 # Safe directory-relative attachment cleanup; already pinned transitively.
-rustix = { version = "=1.1.4", features = ["fs"] }
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 webrtc = "0.20"
 # The facade webrtc reports TURN and STUN gathering failures through; `rtc.rs`
@@ -125,8 +126,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6.5"
 ring = "0.17"
-# wss integration test: self-signed cert + local TLS WebSocket server.
-rcgen = "0.13"
 # The enforcement guards in src/harness read the crate's own modules as syntax
 # trees (patterns, comparisons, impl blocks) rather than as text.
 syn = { version = "2", features = ["full", "visit"] }

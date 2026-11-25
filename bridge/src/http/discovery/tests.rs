@@ -186,7 +186,7 @@ async fn registrar(server: &wiremock::MockServer) -> EndpointRegistrar {
         "epoch-1".into(),
     )
     .unwrap();
-    signer.issuer = CanonicalOrigin(server.uri());
+    signer.paired.issuer = CanonicalOrigin(server.uri());
     EndpointRegistrar {
         signer: std::sync::Arc::new(signer),
         client: reqwest::Client::builder()
@@ -389,4 +389,35 @@ async fn registration_predecessor_conflict_is_classified_after_authenticated_cha
         registrar.register(Some("stale"), false).await,
         Err(ProofError::Conflict)
     );
+}
+
+#[test]
+fn hosted_registration_proof_carries_the_assignment_generation() {
+    let mut signer = DeviceProofSigner::new(
+        &identity(),
+        "https://getbuild.ing",
+        CanonicalOrigin::parse("https://bridge.example").unwrap(),
+        "epoch-1".into(),
+    )
+    .unwrap();
+    let predecessors = [Some("epoch-0".into())];
+    let personal = signer
+        .registration_proof_candidates("challenge", "nonce", &predecessors, true, 1)
+        .unwrap();
+    signer.set_assignment_generation(Some(2251799813685265));
+    let hosted = signer
+        .registration_proof_candidates("challenge", "nonce", &predecessors, false, 1)
+        .unwrap();
+    let claims = |jwt: &str| {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(jwt.split('.').nth(1).unwrap())
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap()
+    };
+    assert!(claims(&personal).get("assignment_generation").is_none());
+    assert_eq!(
+        claims(&hosted)["assignment_generation"],
+        2251799813685265_u64
+    );
+    assert_eq!(claims(&hosted)["enabled"], false);
 }

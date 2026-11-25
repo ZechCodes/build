@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
+use crate::http::hosted::LocalTransport;
 use crate::reachability::Reachability;
 use crate::relay::DeviceIdentity;
 use crate::transport;
@@ -116,13 +117,25 @@ impl PresenceReporter {
         reachable: &Reachability,
         interval: Duration,
     ) -> JoinHandle<()> {
+        Self::start_with_transport(api_url, identity, reachable, interval, None)
+    }
+
+    pub fn start_with_transport(
+        api_url: &str,
+        identity: &DeviceIdentity,
+        reachable: &Reachability,
+        interval: Duration,
+        transport: Option<LocalTransport>,
+    ) -> JoinHandle<()> {
         let beat = Beat {
             identity: identity.clone(),
             post: post_to_api(
                 format!("{}{HEARTBEAT_PATH}", api_url.trim_end_matches('/')),
                 beating_client(interval),
+                transport.clone(),
             ),
             reachable: reachable.clone(),
+            transport,
             due: Arc::new(Mutex::new(Instant::now() + interval)),
         };
         tokio::spawn(supervise(beat, interval))
@@ -216,6 +229,7 @@ struct Beat {
     /// loop: an unreachable device keeps ticking, and beats the moment its
     /// socket is authenticated rather than at its next tick.
     reachable: Reachability,
+    transport: Option<LocalTransport>,
     /// When this beat said it would next come round, beaten or skipped: an
     /// interval after it last did, or the end of the wait it chose after a
     /// failure. The supervisor reads it: a loop that has stopped ticking is as
@@ -285,7 +299,7 @@ impl Beat {
             // Silence is the whole report for a device nothing can reach: the
             // api needs no "offline" post, and one it could not act on from a
             // bridge with no way in is exactly the lie this loop used to tell.
-            if !self.reachable.is_reachable() {
+            if !self.reachable.is_reachable() && !self.uses_hosted_heartbeat() {
                 continue;
             }
             last_sent = Some(tokio::time::Instant::now());
@@ -323,6 +337,12 @@ impl Beat {
         }
     }
 
+    fn uses_hosted_heartbeat(&self) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(LocalTransport::uses_hosted_heartbeat)
+    }
+
     async fn send(&self) -> Result<(), Dropped> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -334,17 +354,20 @@ impl Beat {
 }
 
 /// Post each beat to `url` with `client`.
-fn post_to_api(url: String, client: reqwest::Client) -> Post {
+fn post_to_api(url: String, client: reqwest::Client, transport: Option<LocalTransport>) -> Post {
     Arc::new(move |beat| {
-        let (url, client) = (url.clone(), client.clone());
-        Box::pin(async move { post_beat(&client, &url, &beat).await })
+        let (url, client, transport) = (url.clone(), client.clone(), transport.clone());
+        Box::pin(
+            async move { post_beat_with_transport(&client, &url, &beat, transport.as_ref()).await },
+        )
     })
 }
 
-async fn post_beat(
+async fn post_beat_with_transport(
     client: &reqwest::Client,
     url: &str,
     beat: &HeartbeatRequest,
+    transport: Option<&LocalTransport>,
 ) -> Result<(), Dropped> {
     let response = client
         .post(url)
@@ -354,6 +377,9 @@ async fn post_beat(
         .map_err(|e| Dropped::in_passing(e.to_string()))?;
     let status = response.status();
     if status.is_success() {
+        if let Some(transport) = transport {
+            read_revision(response, transport).await;
+        }
         return Ok(());
     }
     let reason = format!("api refused the heartbeat: {status}");
@@ -372,6 +398,23 @@ async fn post_beat(
         passes,
         retry_after,
     })
+}
+
+async fn read_revision(mut response: reqwest::Response, transport: &LocalTransport) {
+    #[derive(Deserialize)]
+    struct Revision {
+        entitlement_revision: u64,
+    }
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if body.len().saturating_add(chunk.len()) > 1024 {
+            return;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if let Ok(reply) = serde_json::from_slice::<Revision>(&body) {
+        transport.entitlement_revision(reply.entitlement_revision);
+    }
 }
 
 /// The first retry of a beat that failed in passing comes a sixth of an
@@ -664,6 +707,7 @@ mod tests {
                 Box::pin(std::future::ready(answered))
             }),
             reachable: reachable.clone(),
+            transport: None,
             due: Arc::new(Mutex::new(Instant::now() + HEARTBEAT_INTERVAL)),
         };
         (beat, beats)

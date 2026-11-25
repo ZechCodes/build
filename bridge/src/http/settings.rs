@@ -5,6 +5,24 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Whether the operator reserved the existing HTTPS slot for a personal origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OriginMode {
+    Hosted,
+    Personal,
+}
+
+impl OriginMode {
+    pub fn resolve(personal_origin_is_set: impl Fn(&str) -> bool) -> Self {
+        if personal_origin_is_set("BRIDGE_HTTP_ORIGIN") {
+            Self::Personal
+        } else {
+            Self::Hosted
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HttpSettings {
     pub bind: SocketAddr,
@@ -64,4 +82,28 @@ fn allowed_origins(
         return Err("BRIDGE_HTTP_ALLOWED_ORIGINS requires 1..16 exact HTTPS origins".into());
     }
     Ok(Some(origins))
+}
+
+#[cfg(test)]
+mod hosted_settings_tests {
+    use super::*;
+
+    #[test]
+    fn a_present_personal_origin_wins_even_with_invalid_listener_settings() {
+        let lookup = |key: &str| match key {
+            "BRIDGE_HTTP_ORIGIN" => Some(String::new()),
+            "BRIDGE_HTTP_ENABLED" => Some("invalid".into()),
+            _ => None,
+        };
+        assert_eq!(
+            OriginMode::resolve(|key| lookup(key).is_some()),
+            OriginMode::Personal
+        );
+        assert!(HttpSettings::resolve(lookup).is_err());
+    }
+
+    #[test]
+    fn absence_of_a_personal_origin_requests_hosted_setup() {
+        assert_eq!(OriginMode::resolve(|_| false), OriginMode::Hosted);
+    }
 }

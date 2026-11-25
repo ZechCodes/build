@@ -18,6 +18,7 @@ fn policy() -> EndpointPolicy {
         origin: "https://bridge.example".into(),
         allowed_origins: vec!["https://app.example".into()],
         certificate_fingerprint: "certificate".into(),
+        assignment_generation: None,
     }
 }
 

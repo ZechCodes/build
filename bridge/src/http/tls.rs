@@ -23,15 +23,19 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, Stri
 /// is the certificate installed in this exact server configuration.
 pub fn load_identity(cert_path: &Path, key_path: &Path) -> Result<LoadedTls, String> {
     let cert_bytes = read_pem(cert_path, false)?;
-    let key_bytes = read_pem(key_path, true)?;
-    let certificates = CertificateDer::pem_slice_iter(&cert_bytes)
+    let key_bytes = zeroize::Zeroizing::new(read_pem(key_path, true)?);
+    from_pem_bytes(&cert_bytes, &key_bytes)
+}
+
+pub(super) fn from_pem_bytes(cert_bytes: &[u8], key_bytes: &[u8]) -> Result<LoadedTls, String> {
+    let certificates = CertificateDer::pem_slice_iter(cert_bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "invalid HTTP TLS certificate chain")?;
     if certificates.is_empty() {
         return Err("HTTP TLS certificate chain is empty".into());
     }
     let certificate_fingerprint = hex(&Sha256::digest(certificates[0].as_ref()));
-    let key = PrivateKeyDer::from_pem_slice(&key_bytes)
+    let key = PrivateKeyDer::from_pem_slice(key_bytes)
         .map_err(|_| "invalid or missing HTTP TLS private key")?;
     let mut config = ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),

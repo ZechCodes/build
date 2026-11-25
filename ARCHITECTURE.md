@@ -67,7 +67,12 @@ Electron main makes native HTTPS and WSS connections for the hosted SPA.
 In the [hosted tunnels plan](<planning/v2/Account Types and Hosted Tunnels Plan.md>),
 Cloudflare terminates public TLS and forwards REST, SSE and WSS through the
 connector to the bridge's local ingress. Both HTTPS paths use the bridge HTTP
-API. See [Connection state machine](#connection-state-machine) for the planned
+API. Hosted bridge names share the `getbuild.ing` zone and its wildcard edge
+certificate. Prod uses `b-<32 lowercase hex digits>` and dev uses
+`bd-<32 lowercase hex digits>`. The provisioner scopes tunnel names and DNS
+ownership by zone and prefix. The issuer validates the exact assigned origin,
+and the bridge accepts only those two prefixes in an assigned hostname.
+See [Connection state machine](#connection-state-machine) for the planned
 selection policy and [Terminal WebSockets](#terminal-websockets) for the
 terminal route.
 

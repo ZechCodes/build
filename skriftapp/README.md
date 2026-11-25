@@ -125,9 +125,9 @@ the secret at launch is the whole change.
 
 Run `python -m buildapp.hosted_tunnel_worker` from `skriftapp/` as a separate
 process after applying the assignment and signed-mode-report migrations. Worker
-replicas use the same issuer database and zone. PostgreSQL elects one worker per
-zone for each reconcile pass. The worker listens for committed changes and also
-checks every 30 seconds.
+replicas use the same issuer database, zone and host prefix. PostgreSQL elects one
+worker per zone and prefix for each reconcile pass. The worker listens for
+committed changes and also checks every 30 seconds.
 
 | Setting | Value |
 | --- | --- |
@@ -135,26 +135,32 @@ checks every 30 seconds.
 | `HOSTED_TUNNEL_API_BASE_URL` | Cloudflare v4 API base URL, including `/client/v4`. |
 | `HOSTED_TUNNEL_ACCOUNT_ID` | Cloudflare account ID. |
 | `HOSTED_TUNNEL_ZONE_ID` | Cloudflare DNS zone ID. |
-| `HOSTED_TUNNEL_ZONE_NAME` | Dedicated environment bridge zone with a wildcard edge certificate. Reserve `b-<32 lowercase hex digits>` within the zone for Build. |
+| `HOSTED_TUNNEL_ZONE_NAME` | DNS zone with a wildcard edge certificate. Dev and prod use `getbuild.ing`. |
+| `HOSTED_TUNNEL_HOST_PREFIX` | Required on worker and issuer. Use `bd` for dev and `b` for prod. The prefix starts with a lowercase ASCII letter and may contain up to seven more lowercase ASCII letters or digits. |
 | `HOSTED_TUNNEL_API_TOKEN_FILE` | Mounted provisioner-only token with account Tunnel Write and zone DNS Write. |
 | `HOSTED_TUNNEL_WRAPPING_KEY_FILE` | Mounted file containing the environment's base64-encoded 32-byte wrapping key. The claim issuer uses the same key. |
-| `HOSTED_TUNNEL_CAPACITY` | Maximum number of non-deleted tunnels in the whole account, including idle tunnels and other consumers. |
+| `HOSTED_TUNNEL_CAPACITY` | Maximum number of non-deleted tunnels in the environment's zone and prefix namespace. |
+| `HOSTED_TUNNEL_ACCOUNT_LIMIT` | Required ceiling on the complete account inventory, including idle tunnels and other consumers. |
 | `HOSTED_TUNNEL_MODE_SOURCE` | The issuer's signed-mode adapter, `buildapp.hosted_tunnel_source:hosted_mode_source`. |
 
 The issuer uses the account ID and wrapping key file for credential issuance.
 It verifies the hosted origin against the assignment's canonical hostname and
-reserves the `b-<32 lowercase hex digits>` host-label form after removal. The
-worker uses `HOSTED_TUNNEL_ZONE_NAME` to derive its zone-scoped tunnel names.
-Give dev and prod separate credentials and zones. Use the wildcard edge
-certificate for every bridge hostname in its zone.
+reserves the `<prefix>-<32 lowercase hex digits>` host-label form after
+removal. The worker scopes tunnel names and DNS ownership markers by zone and
+prefix. Dev and prod use separate credentials and prefixes in the shared
+`getbuild.ing` zone, under its `*.getbuild.ing` edge certificate.
+If a standalone worker created assignments with the earlier zone-only naming,
+retire those assignments and confirm cleanup with that worker before switching
+to the new namespace.
 
 To replace one assignment, run
 `python -m buildapp.hosted_tunnel_worker rotate DEVICE_ID GENERATION` with the
 worker's configuration. The command withdraws the matching assignment and queues
 reconciliation. The worker confirms DNS and tunnel deletion in order before it
-allocates a fresh generation. A pending assignment reports `capacity` when the
-account is at its ceiling and `collision` when provider resources have ambiguous
-ownership.
+allocates a fresh generation. A pending assignment reports `capacity` when
+either limit is reached and `collision` when provider resources have ambiguous
+ownership. Both limits are checked against a complete inventory. Leave account
+headroom for concurrent creates by independent workers or other consumers.
 
 ### Downloads
 

@@ -48,6 +48,8 @@ class SqlHostedModeSource(HostedModeSource):
 
 
 hosted_mode_source = SqlHostedModeSource()
+# Keep in sync with valid_hostname in bridge/src/http/hosted/claim.rs.
+RESERVED_HOST_PREFIXES = ("b", "bd")
 SETUP_REASONS = {"provisioning", "capacity", "collision"}
 
 
@@ -82,9 +84,10 @@ async def current_assignment(db, device) -> HostedTunnelAssignment | None:
 
 def is_hosted_origin(origin: str) -> bool:
     label, _, domain = (urlsplit(origin).hostname or "").partition(".")
-    # Reserve the generated label even after the provisioner deletes its row.
-    prefix = _host_prefix()
-    return bool(domain and prefix is not None and label_from_host_label(label, prefix) is not None)
+    # Both shipped host-label forms stay reserved before setup and after removal.
+    return bool(domain) and any(
+        label_from_host_label(label, prefix) is not None for prefix in RESERVED_HOST_PREFIXES
+    )
 
 
 def _host_prefix() -> str | None:

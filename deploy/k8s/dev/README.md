@@ -61,9 +61,10 @@ stack before production; production bridge authorization is unchanged.
 
 ## Hosted tunnel provisioner
 
-Dev uses `bd-<32 lowercase hex digits>.getbuild.ing`. The shared
-`*.getbuild.ing` edge certificate also covers prod's `b-…` hostnames. Use a
-dev-only Cloudflare API token with account Tunnel Write and zone DNS Write.
+Dev uses `bd-<32 lowercase hex digits>.builduser.net`. The shared
+`*.builduser.net` edge certificate also covers prod's `b-…` hostnames. Use a
+dev-only Cloudflare API token with account Tunnel Write and DNS Edit scoped
+only to `builduser.net`.
 The provisioner mounts the token and wrapping key. The issuer mounts only the
 wrapping key and keeps serving the app if that optional file is absent.
 
@@ -74,7 +75,7 @@ an operator credential to create the `build-hosted-tunnel` ConfigMap in
 
 | Key | Value |
 | --- | --- |
-| `HOSTED_TUNNEL_ZONE_ID` | Zone ID for `getbuild.ing`. |
+| `HOSTED_TUNNEL_ZONE_ID` | Zone ID for `builduser.net`. |
 | `HOSTED_TUNNEL_CAPACITY` | Dev namespace tunnel budget. |
 | `HOSTED_TUNNEL_ACCOUNT_LIMIT` | Ceiling for all non-deleted tunnels in the account, including other environments and consumers. |
 

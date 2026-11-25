@@ -36,7 +36,7 @@ from buildapp.hosted_tunnel_worker import SIGNED_MODE_SOURCE, _mode_source
 from buildapp.models import AccountPolicy, Device
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, paired, registered, signed
 
-ZONE = "hosted.example"
+ZONE = "builduser.net"
 PERSONAL = {"mode": "personal", "hosted_capable": True}
 HOSTED = {"mode": "hosted", "hosted_capable": True}
 SYNTHETIC_SECRET = base64.b64encode(b"synthetic-test-marker-for-a-tunnel").decode()
@@ -232,11 +232,27 @@ async def test_assignment_hostname_must_be_canonical_and_match_label(db, assignm
     assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
 
 
-@pytest.mark.parametrize("prefix, peer", [("b", "bd"), ("bd", "b")])
-def test_only_the_configured_host_label_is_reserved(monkeypatch, prefix, peer):
-    monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", prefix)
-    assert source.is_hosted_origin(f"https://{prefix}-{'a' * 32}.{ZONE}")
-    assert not source.is_hosted_origin(f"https://{peer}-{'a' * 32}.{ZONE}")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured_prefix", [None, "b", "bd", "B"])
+@pytest.mark.parametrize("host_prefix", ["b", "bd"])
+@pytest.mark.parametrize("zone", [ZONE, "getbuild.ing"])
+async def test_hosted_labels_cannot_be_personal_endpoints(
+    db, monkeypatch, configured_prefix, host_prefix, zone,
+):
+    if configured_prefix is None:
+        monkeypatch.delenv("HOSTED_TUNNEL_HOST_PREFIX", raising=False)
+    else:
+        monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", configured_prefix)
+    _, device, key = await registered(db)
+    origin = f"https://{host_prefix}-{'a' * 32}.{zone}"
+
+    with pytest.raises(NotAuthorizedException):
+        await register(db, device, key, origin, "epoch-two", "epoch-one")
+
+    await reset(db, device)
+    endpoint = await auth._endpoint(db, device.id)
+    endpoint.origin = origin
+    assert not await auth.endpoint_is_current(db, endpoint, device)
 
 
 @pytest.mark.asyncio

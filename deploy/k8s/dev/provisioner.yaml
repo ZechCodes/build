@@ -58,7 +58,7 @@ spec:
             - name: HOSTED_TUNNEL_ACCOUNT_ID
               value: "ea69a9a44466c7690e2637a692a178af"
             - name: HOSTED_TUNNEL_ZONE_NAME
-              value: getbuild.ing
+              value: builduser.net
             - name: HOSTED_TUNNEL_HOST_PREFIX
               value: bd
             - name: HOSTED_TUNNEL_MODE_SOURCE

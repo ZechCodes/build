@@ -128,7 +128,7 @@ def assert_tunnel_mount(pod, container, *, optional, keys):
 def assert_worker_settings(container):
     env = {entry["name"]: entry for entry in container["env"]}
     assert env["HOSTED_TUNNEL_API_BASE_URL"]["value"] == "https://api.cloudflare.com/client/v4"
-    assert env["HOSTED_TUNNEL_ZONE_NAME"]["value"] == "getbuild.ing"
+    assert env["HOSTED_TUNNEL_ZONE_NAME"]["value"] == "builduser.net"
     assert env["HOSTED_TUNNEL_MODE_SOURCE"]["value"] == "buildapp.hosted_tunnel_source:hosted_mode_source"
     assert env["DATABASE_URL"]["valueFrom"] == {"secretKeyRef": {"name": "build-app", "key": "DATABASE_URL"}}
     for key in ("ZONE_ID", "CAPACITY", "ACCOUNT_LIMIT"):

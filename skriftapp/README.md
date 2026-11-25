@@ -135,20 +135,21 @@ committed changes and also checks every 30 seconds.
 | `HOSTED_TUNNEL_API_BASE_URL` | Cloudflare v4 API base URL, including `/client/v4`. |
 | `HOSTED_TUNNEL_ACCOUNT_ID` | Cloudflare account ID. |
 | `HOSTED_TUNNEL_ZONE_ID` | Cloudflare DNS zone ID. |
-| `HOSTED_TUNNEL_ZONE_NAME` | DNS zone with a wildcard edge certificate. Dev and prod use `getbuild.ing`. |
+| `HOSTED_TUNNEL_ZONE_NAME` | DNS zone with a wildcard edge certificate. Dev and prod use `builduser.net`. |
 | `HOSTED_TUNNEL_HOST_PREFIX` | Required on worker and issuer. Use `bd` for dev and `b` for prod. The prefix starts with a lowercase ASCII letter and may contain up to seven more lowercase ASCII letters or digits. |
-| `HOSTED_TUNNEL_API_TOKEN_FILE` | Mounted provisioner-only token with account Tunnel Write and zone DNS Write. |
+| `HOSTED_TUNNEL_API_TOKEN_FILE` | Mounted provisioner-only token with account Tunnel Write and DNS Edit scoped only to `builduser.net`. |
 | `HOSTED_TUNNEL_WRAPPING_KEY_FILE` | Mounted file containing the environment's base64-encoded 32-byte wrapping key. The claim issuer uses the same key. |
 | `HOSTED_TUNNEL_CAPACITY` | Maximum number of non-deleted tunnels in the environment's zone and prefix namespace. |
 | `HOSTED_TUNNEL_ACCOUNT_LIMIT` | Required ceiling on the complete account inventory, including idle tunnels and other consumers. |
 | `HOSTED_TUNNEL_MODE_SOURCE` | The issuer's signed-mode adapter, `buildapp.hosted_tunnel_source:hosted_mode_source`. |
 
 The issuer uses the account ID and wrapping key file for credential issuance.
-It verifies the hosted origin against the assignment's canonical hostname and
-reserves the `<prefix>-<32 lowercase hex digits>` host-label form after
+It verifies the hosted origin against the assignment's canonical hostname.
+Both `b-<32 lowercase hex digits>` and `bd-<32 lowercase hex digits>` stay
+reserved under every domain, regardless of issuer configuration or assignment
 removal. The worker scopes tunnel names and DNS ownership markers by zone and
 prefix. Dev and prod use separate credentials and prefixes in the shared
-`getbuild.ing` zone, under its `*.getbuild.ing` edge certificate.
+tunnel-only `builduser.net` zone, under its `*.builduser.net` edge certificate.
 If a standalone worker created assignments with the earlier zone-only naming,
 retire those assignments and confirm cleanup with that worker before switching
 to the new namespace.

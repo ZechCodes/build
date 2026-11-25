@@ -372,12 +372,16 @@ a_failed_provenance_publish_restores_the_previous_installation() {
         status="$(CASE_FAIL_MARKER_PUBLISH=1 CASE_SKIP_SERVICE=0 run_install "$root")"
         assert_exit "$name" "$root" "$status" 1 || return 1
         if [ "$fp_existing" = '1' ]; then
-            [ "$(cat "$root/dest/build-bridge")" = 'existing bridge' ] \
-                && [ "$(cat "$root/home/.build/installed-bridge")" = 'existing provenance' ] \
-                || { fail "$name" "previous installation not restored"; return 1; }
+            if [ "$(cat "$root/dest/build-bridge")" != 'existing bridge' ] \
+                || [ "$(cat "$root/home/.build/installed-bridge")" != 'existing provenance' ]; then
+                fail "$name" "previous installation not restored"
+                return 1
+            fi
         else
-            [ ! -e "$root/dest/build-bridge" ] && [ ! -e "$root/home/.build/installed-bridge" ] \
-                || { fail "$name" "unmanaged candidate remains"; return 1; }
+            if [ -e "$root/dest/build-bridge" ] || [ -e "$root/home/.build/installed-bridge" ]; then
+                fail "$name" "unmanaged candidate remains"
+                return 1
+            fi
         fi
         [ ! -e "$root/home/bridge-calls" ] || { fail "$name" "changed service"; return 1; }
     done

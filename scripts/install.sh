@@ -379,7 +379,9 @@ install_binary() {
     ib_path="$ib_dir/build-bridge"
     ib_digest="$(actual_sum build-bridge)"
     ib_marker="$HOME/.build/installed-bridge"
-    [ ! -d "$ib_path" ] && [ ! -d "$ib_marker" ] || fail "the installed bridge or provenance path is a directory"
+    if [ -d "$ib_path" ] || [ -d "$ib_marker" ]; then
+        fail "the installed bridge or provenance path is a directory"
+    fi
     publish_runtime_launcher
     mkdir -p "$HOME/.build" || fail "could not create $(shown "$HOME/.build")" \
         "Make your home directory writable, then run the installer again."

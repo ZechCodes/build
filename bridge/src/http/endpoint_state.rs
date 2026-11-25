@@ -13,6 +13,8 @@ pub struct EndpointPolicy {
     pub origin: String,
     pub allowed_origins: Vec<String>,
     pub certificate_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -22,6 +24,8 @@ pub struct EndpointRecord {
     pub endpoint_epoch: String,
     pub enabled: bool,
     pub registered_epoch: Option<String>,
+    #[serde(default)]
+    pub hosted_ready_once: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unacknowledged_epochs: Vec<String>,
 }
@@ -30,18 +34,32 @@ const MAX_UNACKNOWLEDGED_EPOCHS: usize = 6;
 
 impl EndpointRecord {
     pub fn prepare(path: &Path, desired: Option<EndpointPolicy>) -> Result<Option<Self>, String> {
-        Self::prepare_before_persist(path, desired, || {})
+        let enabled = desired.is_some();
+        Self::prepare_enabled(path, desired, enabled)
+    }
+
+    pub fn prepare_enabled(
+        path: &Path,
+        desired: Option<EndpointPolicy>,
+        enabled: bool,
+    ) -> Result<Option<Self>, String> {
+        Self::prepare_before_persist(path, desired, enabled, || {})
+    }
+
+    pub(super) fn current(path: &Path) -> Result<Option<Self>, String> {
+        let transaction = StateTransaction::begin(path)?;
+        read(&transaction.path)
     }
 
     fn prepare_before_persist(
         path: &Path,
         desired: Option<EndpointPolicy>,
+        enabled: bool,
         before_persist: impl FnOnce(),
     ) -> Result<Option<Self>, String> {
         let transaction = StateTransaction::begin(path)?;
         let path = transaction.path.as_path();
         let old = read(path)?;
-        let enabled = desired.is_some();
         let Some(policy) = desired.or_else(|| old.as_ref().map(|value| value.policy.clone()))
         else {
             return Ok(None);
@@ -79,6 +97,9 @@ impl EndpointRecord {
             endpoint_epoch: uuid::Uuid::new_v4().to_string(),
             enabled,
             registered_epoch,
+            hosted_ready_once: old
+                .as_ref()
+                .is_some_and(|old| same_authority && old.hosted_ready_once),
             unacknowledged_epochs,
         };
         before_persist();
@@ -103,6 +124,8 @@ impl EndpointRecord {
         }
         current.registered_epoch = Some(self.endpoint_epoch.clone());
         current.unacknowledged_epochs.clear();
+        current.hosted_ready_once |=
+            current.enabled && current.policy.assignment_generation.is_some();
         before_persist();
         persist(path, &current)
     }
@@ -134,7 +157,8 @@ impl EndpointRecord {
         desired: Option<EndpointPolicy>,
         hook: impl FnOnce(),
     ) -> Result<Option<Self>, String> {
-        Self::prepare_before_persist(path, desired, hook)
+        let enabled = desired.is_some();
+        Self::prepare_before_persist(path, desired, enabled, hook)
     }
 
     #[cfg(test)]
@@ -292,4 +316,63 @@ fn persist_to(path: &Path, temporary: &Path, record: &EndpointRecord) -> Result<
             .map_err(|_| "cannot sync HTTP endpoint state directory")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OLD_RECORD: &str = r#"{
+        "policy": {
+            "device_id": "device",
+            "issuer": "https://issuer.example",
+            "origin": "https://personal.example",
+            "allowed_origins": ["https://issuer.example"],
+            "certificate_fingerprint": "sha256:old-leaf"
+        },
+        "endpoint_epoch": "personal-epoch",
+        "enabled": true,
+        "registered_epoch": "personal-epoch"
+    }"#;
+
+    #[test]
+    fn hosted_endpoint_preserves_old_tcp_records_and_latches_only_on_enabled_ack() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("endpoint.json");
+        fs::write(&path, OLD_RECORD).unwrap();
+        let old = EndpointRecord::current(&path).unwrap().unwrap();
+        assert_eq!(old.policy.certificate_fingerprint, "sha256:old-leaf");
+        assert_eq!(old.policy.assignment_generation, None);
+        assert!(!old.hosted_ready_once);
+
+        let mut policy = old.policy;
+        policy.origin = "https://hosted.example".into();
+        policy.assignment_generation = Some(2251799813685265);
+        let disabled = EndpointRecord::prepare_enabled(&path, Some(policy.clone()), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disabled.registered_epoch.as_deref(), Some("personal-epoch"));
+        disabled.acknowledge(&path).unwrap();
+        assert!(
+            !EndpointRecord::current(&path)
+                .unwrap()
+                .unwrap()
+                .hosted_ready_once
+        );
+        let enabled = EndpointRecord::prepare(&path, Some(policy))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            enabled.registered_epoch.as_deref(),
+            Some(disabled.endpoint_epoch.as_str())
+        );
+        assert!(!enabled.hosted_ready_once);
+        enabled.acknowledge(&path).unwrap();
+        assert!(
+            EndpointRecord::prepare(&path, None)
+                .unwrap()
+                .unwrap()
+                .hosted_ready_once
+        );
+    }
 }

@@ -10,13 +10,10 @@
 //! so a bridge that is killed, unplugged or partitioned needs no goodbye — it
 //! simply stops beating.
 //!
-//! What the beat asserts is that this device can be *reached*, not that its
-//! process is running: it goes out only while the daemon holds a relay socket
-//! the relay has authenticated ([`crate::reachability::Reachability`]). A bridge
-//! that is alive and can still reach the api, but whose relay socket has been
-//! severed, cannot be dialled by any browser — so it says nothing, and the api
-//! lets it go a window later. Saying "online" for that bridge is what had a
-//! browser dialling a machine the relay held no socket for, over and over.
+//! WebRTC presence follows the authenticated relay socket. An acknowledged
+//! hosted endpoint can also make the bridge reachable. When the bridge stops
+//! dialing the relay for hosted mode, the signed heartbeat continues through
+//! connector outages so a policy revision can trigger a fresh issuer claim.
 //!
 //! Best effort and unkillable, in that order: a refused, unreachable or hung
 //! api is logged and the loop beats on. Nothing above this waits on it.
@@ -37,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
+use crate::http::hosted::LocalTransport;
 use crate::reachability::Reachability;
 use crate::relay::DeviceIdentity;
 use crate::transport;
@@ -116,13 +114,25 @@ impl PresenceReporter {
         reachable: &Reachability,
         interval: Duration,
     ) -> JoinHandle<()> {
+        Self::start_with_transport(api_url, identity, reachable, interval, None)
+    }
+
+    pub fn start_with_transport(
+        api_url: &str,
+        identity: &DeviceIdentity,
+        reachable: &Reachability,
+        interval: Duration,
+        transport: Option<LocalTransport>,
+    ) -> JoinHandle<()> {
         let beat = Beat {
             identity: identity.clone(),
             post: post_to_api(
                 format!("{}{HEARTBEAT_PATH}", api_url.trim_end_matches('/')),
                 beating_client(interval),
+                transport.clone(),
             ),
             reachable: reachable.clone(),
+            transport,
             due: Arc::new(Mutex::new(Instant::now() + interval)),
         };
         tokio::spawn(supervise(beat, interval))
@@ -216,6 +226,7 @@ struct Beat {
     /// loop: an unreachable device keeps ticking, and beats the moment its
     /// socket is authenticated rather than at its next tick.
     reachable: Reachability,
+    transport: Option<LocalTransport>,
     /// When this beat said it would next come round, beaten or skipped: an
     /// interval after it last did, or the end of the wait it chose after a
     /// failure. The supervisor reads it: a loop that has stopped ticking is as
@@ -282,10 +293,9 @@ impl Beat {
                 }
             }
             self.came_round(interval);
-            // Silence is the whole report for a device nothing can reach: the
-            // api needs no "offline" post, and one it could not act on from a
-            // bridge with no way in is exactly the lie this loop used to tell.
-            if !self.reachable.is_reachable() {
+            // Free and personal bridges retain relay-backed presence.
+            // Hosted bridges keep receiving issuer revision hints during outages.
+            if !self.reachable.is_reachable() && !self.uses_hosted_heartbeat() {
                 continue;
             }
             last_sent = Some(tokio::time::Instant::now());
@@ -323,6 +333,12 @@ impl Beat {
         }
     }
 
+    fn uses_hosted_heartbeat(&self) -> bool {
+        self.transport
+            .as_ref()
+            .is_some_and(LocalTransport::uses_hosted_heartbeat)
+    }
+
     async fn send(&self) -> Result<(), Dropped> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -334,17 +350,20 @@ impl Beat {
 }
 
 /// Post each beat to `url` with `client`.
-fn post_to_api(url: String, client: reqwest::Client) -> Post {
+fn post_to_api(url: String, client: reqwest::Client, transport: Option<LocalTransport>) -> Post {
     Arc::new(move |beat| {
-        let (url, client) = (url.clone(), client.clone());
-        Box::pin(async move { post_beat(&client, &url, &beat).await })
+        let (url, client, transport) = (url.clone(), client.clone(), transport.clone());
+        Box::pin(
+            async move { post_beat_with_transport(&client, &url, &beat, transport.as_ref()).await },
+        )
     })
 }
 
-async fn post_beat(
+async fn post_beat_with_transport(
     client: &reqwest::Client,
     url: &str,
     beat: &HeartbeatRequest,
+    transport: Option<&LocalTransport>,
 ) -> Result<(), Dropped> {
     let response = client
         .post(url)
@@ -354,6 +373,9 @@ async fn post_beat(
         .map_err(|e| Dropped::in_passing(e.to_string()))?;
     let status = response.status();
     if status.is_success() {
+        if let Some(transport) = transport {
+            read_revision(response, transport).await;
+        }
         return Ok(());
     }
     let reason = format!("api refused the heartbeat: {status}");
@@ -372,6 +394,34 @@ async fn post_beat(
         passes,
         retry_after,
     })
+}
+
+#[cfg(test)]
+pub(crate) async fn post_test_heartbeat(url: &str, transport: &LocalTransport) -> bool {
+    let identity =
+        crate::identity::to_device_identity(&crate::identity::generate("heartbeat test"));
+    let beat = build_heartbeat(&identity, 1).unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    post_beat_with_transport(&client, url, &beat, Some(transport))
+        .await
+        .is_ok()
+}
+
+async fn read_revision(mut response: reqwest::Response, transport: &LocalTransport) {
+    #[derive(Deserialize)]
+    struct Revision {
+        entitlement_revision: u64,
+    }
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if body.len().saturating_add(chunk.len()) > 1024 {
+            return;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if let Ok(reply) = serde_json::from_slice::<Revision>(&body) {
+        transport.entitlement_revision(reply.entitlement_revision);
+    }
 }
 
 /// The first retry of a beat that failed in passing comes a sixth of an
@@ -664,9 +714,45 @@ mod tests {
                 Box::pin(std::future::ready(answered))
             }),
             reachable: reachable.clone(),
+            transport: None,
             due: Arc::new(Mutex::new(Instant::now() + HEARTBEAT_INTERVAL)),
         };
         (beat, beats)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hosted_heartbeat_continues_through_loss_of_both_transports() {
+        let relay = Reachability::unreachable();
+        let hosted = relay.via_hosted();
+        let (mut beat, mut posts) = recording(&relay, |_| Ok(()));
+        let transport = LocalTransport::new();
+        beat.transport = Some(transport.clone());
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        // Free and personal modes both retain relay-backed heartbeat behavior.
+        tokio::time::sleep(HEARTBEAT_INTERVAL * 2).await;
+        assert!(
+            posts.try_recv().is_err(),
+            "relay-dependent bridge stays silent"
+        );
+        relay.reached();
+        tokio::time::timeout(HEARTBEAT_INTERVAL, posts.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        hosted.reached();
+        transport.hosted_endpoint_acknowledged();
+        relay.lost();
+        hosted.lost();
+        assert!(!relay.is_reachable());
+        for _ in 0..2 {
+            tokio::time::timeout(HEARTBEAT_INTERVAL * 2, posts.recv())
+                .await
+                .expect("hosted heartbeat must continue during outages")
+                .unwrap();
+        }
+        beating.abort();
     }
 
     /// How long, on the paused clock, until the next beat is posted.

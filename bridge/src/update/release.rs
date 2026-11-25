@@ -475,3 +475,9 @@ mod tests {
         assert!(extract_binary(&archive, &dir.path().join("binary")).is_ok());
     }
 }
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod connector;

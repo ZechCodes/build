@@ -63,6 +63,8 @@ use build_bridge::carrier::FrameIntake;
 use build_bridge::config::{self, BridgeConfig};
 use build_bridge::execution::ExecutionService;
 use build_bridge::harness::HarnessContext;
+use build_bridge::http::hosted::{self, LocalTransport};
+use build_bridge::http::settings::{HttpSettings, OriginMode};
 use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
@@ -606,29 +608,89 @@ fn start_http_service(
     stored: Option<&identity::StoredIdentity>,
     execution: Arc<ExecutionService>,
     liveness: &DedicatedRuntime,
+    transport: LocalTransport,
+    reachable: Reachability,
 ) -> Option<HttpService> {
-    let settings =
-        build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
-            .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
-    let state_path = runtime.tasks_dir.join("http-endpoint.json");
-    let stored = match (settings.as_ref(), stored) {
-        (_, Some(stored)) => stored.clone(),
-        (None, None) => return None,
-        (Some(_), None) => exit_startup(
-            "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient".into(),
-        ),
+    let mode = OriginMode::resolve(|name| std::env::var_os(name).is_some());
+    let settings = personal_http_settings(mode);
+    let Some(stored) = stored.cloned() else {
+        if settings.is_some() {
+            exit_startup(
+                "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient".into(),
+            );
+        }
+        return None;
     };
-    let (stop, stopped) = tokio::sync::watch::channel(false);
-    let task = liveness.spawn(build_bridge::http::supervisor::run(
-        settings,
-        stored,
-        runtime.config.api_url.clone(),
-        runtime.config.web_url.clone(),
+    let state_path = runtime.tasks_dir.join("http-endpoint.json");
+    let issuer = &runtime.config.api_url;
+    transport.restore_hosted_history(&state_path, mode, &stored, issuer);
+    transport.log_initial_check();
+    let services = hosted::Services {
+        identity: stored,
+        issuer: issuer.clone(),
+        web_origin: runtime.config.web_url.clone(),
         state_path,
+        state_root: runtime.config.state_root.clone(),
         execution,
-        stopped,
-    ));
+        transport,
+        hosted_reachability: reachable.via_hosted(),
+        executable: std::env::var_os("BRIDGE_CLOUDFLARED_EXECUTABLE").map(Into::into),
+    };
+
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let task = liveness.spawn(run_http_services(services, mode, settings, stopped));
     Some((stop, task))
+}
+
+fn personal_http_settings(mode: OriginMode) -> Option<HttpSettings> {
+    if mode != OriginMode::Personal {
+        if std::env::vars_os().any(|(name, _)| name.as_encoded_bytes().starts_with(b"BRIDGE_HTTP_"))
+        {
+            eprintln!("Ignoring personal HTTP settings because BRIDGE_HTTP_ORIGIN is unset. Hosted setup follows account policy.");
+        }
+        return None;
+    }
+    match HttpSettings::resolve(|name| std::env::var(name).ok()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("HTTP is off: invalid personal HTTP configuration: {error}");
+            None
+        }
+    }
+}
+
+async fn run_http_services(
+    services: hosted::Services,
+    mode: OriginMode,
+    settings: Option<HttpSettings>,
+    stopped: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), String> {
+    let (ready, readiness) = tokio::sync::watch::channel(false);
+    let personal = async {
+        if mode == OriginMode::Personal {
+            let result = build_bridge::http::supervisor::run_with_ready(
+                settings,
+                services.identity.clone(),
+                services.issuer.clone(),
+                services.web_origin.clone(),
+                services.state_path.clone(),
+                services.execution.clone(),
+                build_bridge::http::supervisor::HttpSignals {
+                    shutdown: stopped.clone(),
+                    ready: Some(ready),
+                },
+            )
+            .await;
+            if let Err(error) = result {
+                eprintln!("HTTP is off: personal HTTP supervisor failed: {error}");
+            }
+        }
+    };
+    let ((), result) = tokio::join!(
+        personal,
+        services.clone().run(mode, readiness, stopped.clone())
+    );
+    result
 }
 
 async fn await_daemon_stop(
@@ -733,15 +795,9 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
             &identity.identity_private_key_b64,
         ),
     ]);
-    // Presence is the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6):
-    // this daemon says so itself, signed, every 30 s, and the relay reports
-    // nothing about any device. What it says is that this device can be
-    // REACHED, which is the question `online` is read as answering: the beat
-    // goes out only while the relay loop below holds an authenticated socket,
-    // because that socket is the only way in. A bridge that is running, and can
-    // still reach the api, and has no relay socket is a bridge no browser can
-    // open a session to — and saying "online" for it is what had this account
-    // dialling two machines that were never going to answer.
+    // The API derives presence from signed beats on the liveness runtime.
+    // Relay and hosted HTTPS publish their own reachability for browser access
+    // and for the agent resume path.
     let reachable = Reachability::unreachable();
     spawn_update_heartbeat(&runtime.config, app.clone());
     // The service manager's stderr file, rotated rather than left to grow.
@@ -753,9 +809,16 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         Ok(liveness) => liveness,
         Err(error) => exit_startup(error),
     };
+    let local_transport = LocalTransport::new();
     let _presence_beats = {
         let _on_liveness = liveness.handle().enter();
-        PresenceReporter::start(&runtime.config.api_url, &identity, &reachable)
+        PresenceReporter::start_with_transport(
+            &runtime.config.api_url,
+            &identity,
+            &reachable,
+            build_bridge::presence::HEARTBEAT_INTERVAL,
+            Some(local_transport.clone()),
+        )
     };
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
@@ -763,8 +826,14 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // reached over either wire is the one session.
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     let execution = intake.execution();
-    let mut http_service =
-        start_http_service(&runtime, stored.as_ref(), execution.clone(), &liveness);
+    let mut http_service = start_http_service(
+        &runtime,
+        stored.as_ref(),
+        execution.clone(),
+        &liveness,
+        local_transport.clone(),
+        reachable.clone(),
+    );
     let reaper_execution = execution.clone();
     let _execution_reaper = liveness.handle().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -790,8 +859,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         build_bridge::harness::secret_profile_registry_root(&runtime.harness_context.state_root),
     )
     .await;
-    // The relay socket, redialled for as long as the daemon runs, on the
-    // liveness runtime. The main thread waits for the signal that ends the
+    // The relay socket redials on the liveness runtime while RTC is allowed. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
     // ending the way every other end does (`relay::RelayConnection`'s drop).
     // Dialled before the services below are started, so the socket does not
@@ -803,6 +871,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         identity.clone(),
         intake.clone(),
         reachable.clone(),
+        local_transport.rtc_permission(),
     ));
     AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
     AppState::spawn_secret_release_socket(app.clone(), runtime.mcp_socket.clone());
@@ -840,8 +909,8 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // Walks a workspace's size on disk when the Workspaces tab asks (#273).
     AppState::spawn_workspace_sizes(app.clone());
 
-    // Bring back whoever the last shutdown was holding. It waits for an
-    // authenticated relay socket rather than firing here, because a resumed
+    // Bring back whoever the last shutdown was holding. Wait for browser
+    // reachability before resuming, because a resumed
     // agent starts talking immediately and the human has to be able to SEE it:
     // a bridge no browser can reach is one whose agents work in the dark.
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
@@ -895,12 +964,21 @@ async fn relay_forever(
     identity: DeviceIdentity,
     intake: Arc<FrameIntake>,
     reachable: Reachability,
+    mut permission: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut backoff = relay::redial_backoff();
     loop {
-        let connected_at = std::time::Instant::now();
-        let outcome = relay::run(&device_url, &identity, intake.clone(), &reachable).await;
-        backoff.note_session(connected_at.elapsed());
+        let connection = async {
+            let started = std::time::Instant::now();
+            let outcome = relay::run(&device_url, &identity, intake.clone(), &reachable).await;
+            (outcome, started.elapsed())
+        };
+        let Some((outcome, elapsed)) = hosted::allowed_rtc_dial(&mut permission, connection).await
+        else {
+            backoff.reset();
+            continue;
+        };
+        backoff.note_session(elapsed);
         let wait = relay::redial_wait(&outcome, &mut backoff);
         relay::say_redial(&outcome, wait);
         tokio::time::sleep(wait).await;

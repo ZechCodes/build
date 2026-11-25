@@ -4008,8 +4008,12 @@ not the protocol, sessions or network behavior.
 - **Relay client**: `bridge/src/relay.rs` holds a `wss` connection to
   `/ws/device` (default `wss://relay.getbuild.ing`, `DEFAULT_RELAY_URL` in
   `bridge/src/config.rs`) and authenticates with the device's Ed25519 identity.
-  `relay_forever` in `bridge/src/main.rs` reconnects it with backoff
-  (`bridge/src/backoff.rs`).
+  `relay_forever` in `bridge/src/main.rs` reconnects with backoff while the
+  local RTC gate is open. A hosted bridge keeps bootstrap signaling until its
+  enabled HTTPS endpoint registration is acknowledged. That acknowledgement
+  closes signaling and fences new dials, and the persisted latch restores the
+  fence for the same pairing after restart. Established WebRTC channels can
+  finish. Free and personal bridges retain the existing reconnect behavior.
 - **Relay broker**: `bridge/src/bin/relay.rs` and `bridge/src/relay_server.rs`
   serve `/ws/device`, `/ws/client` and `/health`. They validate against skriftapp
   over `/internal/*` and forward opaque envelopes for WebRTC signaling.

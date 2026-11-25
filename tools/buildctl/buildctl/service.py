@@ -22,6 +22,7 @@ class Process:
 class ServiceManager(Protocol):
     def state(self) -> str: ...
     def process(self) -> Process | None: ...
+    def invocation(self) -> str | None: ...
     def prepare_install(self) -> None: ...
     def reload(self) -> None: ...
     def stop(self) -> None: ...
@@ -74,12 +75,18 @@ class Systemd:
         self.env.require_mutation()
         self.command("stop")
 
-    def stop_for_restart(self):
-        self.env.require_mutation()
-        invocation = self.command(
+    def invocation(self):
+        value = self.command(
             "show", "--property=InvocationID", "--value", check=False
         ).stdout.strip()
-        if not re.fullmatch(r"[0-9a-f]{32}", invocation) or invocation == "0" * 32:
+        if re.fullmatch(r"[0-9a-f]{32}", value) and value != "0" * 32:
+            return value
+        return None
+
+    def stop_for_restart(self):
+        self.env.require_mutation()
+        invocation = self.invocation()
+        if invocation is None:
             self.stop()
             return
         directory = self.env.path(self.env.state_root / "tasks")

@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod discovery_limits;
 pub(crate) mod endpoint_restart;
 pub mod endpoint_state;
+pub mod hosted;
 pub mod limits;
 pub mod listener;
 pub mod policy;

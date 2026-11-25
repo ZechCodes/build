@@ -39,6 +39,7 @@ class FakeRunner:
         self.runtime_failure = None
         self.restart_invocation = ""
         self.restart_intent = None
+        self.transport_log = None
 
     def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         self.calls.append((args, cwd, env))
@@ -120,17 +121,19 @@ class FakeRunner:
             else:
                 target = self.installed
             self.exe.symlink_to(target)
+            if self.transport_log:
+                self.append_auth(self.transport_log)
             if self.auth:
                 self.append_auth()
         return "", 0
 
-    def append_auth(self):
+    def append_auth(self, line="relay: authenticated"):
         log = self.home / ".local/state/build-dev/log/bridge.err.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         if self.rotate and log.exists():
             log.rename(log.with_suffix(".old"))
         with log.open("a") as stream:
-            stream.write("relay: authenticated\n")
+            stream.write(line + "\n")
 
     def pair(self, binary, *, env, approve_url):
         assert env["BRIDGE_CHANNEL"] == "dev"
@@ -495,3 +498,42 @@ def test_failed_rollback_does_not_leave_stale_pair_candidate(setup):
         bridge.rollback()
     bridge.pair()
     assert runner.pairs[-1] == env.binary_dir / A / "build-bridge"
+
+
+@pytest.mark.parametrize("mode", ["hosted-ready", "personal-ready"])
+def test_deploy_uses_fresh_https_evidence_for_exact_invocation(setup, mode):
+    bridge, runner, _ = setup
+    runner.auth = False
+    runner.restart_invocation = "ab" * 16
+    runner.transport_log = f"bridge transport: 123 {runner.restart_invocation} {mode}"
+    assert bridge.deploy()["transport"] == mode
+
+
+@pytest.mark.parametrize("pid, invocation", [(999, "ab" * 16), (123, "de" * 16)])
+def test_deploy_refuses_https_evidence_from_a_different_process(setup, pid, invocation):
+    bridge, runner, _ = setup
+    runner.auth = False
+    runner.restart_invocation = "ab" * 16
+    runner.transport_log = f"bridge transport: {pid} {invocation} hosted-ready"
+    with pytest.raises(BuildctlError, match="verification"):
+        bridge.deploy()
+
+
+def test_pending_hosted_does_not_verify_via_a_bootstrap_relay(setup):
+    bridge, runner, _ = setup
+    runner.restart_invocation = "ab" * 16
+    runner.transport_log = f"bridge transport: 123 {runner.restart_invocation} hosted-pending"
+    with pytest.raises(BuildctlError, match="verification"):
+        bridge.deploy()
+
+
+def test_deploy_ignores_ready_evidence_superseded_by_a_pending_signal(setup):
+    bridge, runner, _ = setup
+    invocation = "ab" * 16
+    runner.restart_invocation = invocation
+    runner.transport_log = (
+        f"bridge transport: 123 {invocation} hosted-ready\n"
+        f"bridge transport: 123 {invocation} hosted-pending"
+    )
+    with pytest.raises(BuildctlError, match="verification"):
+        bridge.deploy()

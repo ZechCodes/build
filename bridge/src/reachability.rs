@@ -1,79 +1,112 @@
-//! Whether this device can be reached — the one fact the relay socket and the
-//! heartbeat have to agree on.
-//!
-//! `online` in the account's device list is read as "I can dial this machine".
-//! It used to answer a different question: the heartbeat task was started once
-//! at boot and posted to the api over its own HTTPS connection, knowing nothing
-//! about the relay socket a browser actually finds the device on. So a bridge
-//! whose relay socket had been severed kept beating, the api kept saying
-//! online, the browser kept dialling, and the relay kept answering that it
-//! holds no such device.
-//!
-//! This is the flag that closes that gap. The relay client raises it when the
-//! relay has authenticated the socket and drops it the moment that socket ends,
-//! however it ends; `presence.rs` beats only while it is raised. Presence
-//! stays the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6) — the
-//! relay still reports nothing about any device — but what the device reports
-//! about itself is now reachability rather than mere liveness.
-//!
-//! The flag is also something to wait on ([`Reachability::watch`]): the beat
-//! goes out the moment the relay authenticates the socket rather than at its
-//! next tick, which on a cold start was a whole interval away (#321).
+//! Browser reachability from relay signaling or the hosted HTTPS endpoint.
+//! Each transport owns its flag. The aggregate wakes presence and resume
+//! when either transport becomes reachable.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
 /// A shared "this device is findable" flag. Cloning shares the flag, so the
 /// relay client and the presence reporter hold the same one.
 #[derive(Clone, Debug)]
-pub struct Reachability(Arc<watch::Sender<bool>>);
+pub struct Reachability {
+    state: Arc<ReachabilityState>,
+    source: usize,
+}
+
+#[derive(Debug)]
+struct ReachabilityState {
+    sources: Mutex<[bool; 2]>,
+    reachable: watch::Sender<bool>,
+}
 
 impl Default for Reachability {
     fn default() -> Self {
-        Self(Arc::new(watch::channel(false).0))
+        Self {
+            state: Arc::new(ReachabilityState {
+                sources: Mutex::new([false; 2]),
+                reachable: watch::channel(false).0,
+            }),
+            source: 0,
+        }
     }
 }
 
 impl Reachability {
-    /// A device nobody has reached yet. The default is the under-reporting one
-    /// on purpose: a bridge that has never been authenticated by a relay cannot
-    /// be dialled, and saying so costs one heartbeat window, while the opposite
-    /// mistake costs a browser that dials a machine that is not there.
+    /// A device with no authenticated relay or acknowledged hosted endpoint.
     pub fn unreachable() -> Self {
         Self::default()
     }
 
-    /// The relay authenticated this device's socket: it can be dialled.
-    pub fn reached(&self) {
-        self.0
-            .send_if_modified(|reachable| !std::mem::replace(reachable, true));
+    /// A distinct HTTPS source of the same browser reachability.
+    pub fn via_hosted(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            source: 1,
+        }
     }
 
-    /// That socket has ended, however it ended — closed, severed, timed out, or
-    /// the future running it dropped. Nothing is posted to say so: the beats
-    /// stop, and every reader past the api's window sees the device go.
+    pub fn reached(&self) {
+        self.set(true);
+    }
+
     pub fn lost(&self) {
-        self.0
-            .send_if_modified(|reachable| std::mem::replace(reachable, false));
+        self.set(false);
+    }
+
+    fn set(&self, reachable: bool) {
+        let mut sources = self.state.sources.lock().unwrap();
+        sources[self.source] = reachable;
+        let any = sources.iter().any(|source| *source);
+        self.state.reachable.send_if_modified(|last| {
+            *last != any && {
+                *last = any;
+                true
+            }
+        });
     }
 
     /// Whether a browser could reach this device right now.
     pub fn is_reachable(&self) -> bool {
-        *self.0.borrow()
+        *self.state.reachable.borrow()
     }
 
     /// A receiver that wakes on every change of the answer — unreachable to
     /// reachable or back, never for a repeat of the same one. It starts having
     /// seen the answer as it stands.
     pub fn watch(&self) -> watch::Receiver<bool> {
-        self.0.subscribe()
+        self.state.reachable.subscribe()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_reachability_and_relay_each_keep_the_device_reachable() {
+        let relay = Reachability::unreachable();
+        let hosted = relay.via_hosted();
+        let mut changes = relay.watch();
+
+        for (first, second) in [(&relay, &hosted), (&hosted, &relay)] {
+            first.reached();
+            assert!(changes.has_changed().unwrap());
+            assert!(*changes.borrow_and_update());
+
+            second.reached();
+            first.lost();
+            assert!(first.is_reachable(), "the remaining source is still live");
+            assert!(
+                !changes.has_changed().unwrap(),
+                "partial loss must not wake readers"
+            );
+
+            second.lost();
+            assert!(changes.has_changed().unwrap());
+            assert!(!*changes.borrow_and_update());
+        }
+    }
 
     #[test]
     fn a_device_is_unreachable_until_a_relay_has_authenticated_it() {

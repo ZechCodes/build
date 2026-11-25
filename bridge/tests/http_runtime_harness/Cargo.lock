@@ -391,6 +391,7 @@ dependencies = [
  "log",
  "notify",
  "p256",
+ "rcgen 0.13.2",
  "percent-encoding",
  "portable-pty",
  "reqwest",

@@ -373,6 +373,8 @@ jobs:
         run: |
           set -euo pipefail
           sha256sum build-bridge-*.tar.gz install.sh > SHA256SUMS
+          # The connector is fetched lazily from the exact official upstream release.
+          cat "$GITHUB_WORKSPACE/bridge/cloudflared.SHA256SUMS" >> SHA256SUMS
           cat SHA256SUMS
 
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3

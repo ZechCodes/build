@@ -82,7 +82,7 @@ def test_configured_environment_and_install(configured, monkeypatch):
     runner.run.return_value.returncode = 0
     runner.run.return_value.stderr = ""
     bridge = Bridge(env, runner, env.home, service=service)
-    bridge.verify = Mock()
+    bridge.verify = Mock(return_value={"relay": "authenticated"})
     bridge.activate(SHA)
     install = runner.run.call_args
     assert install.args[0] == [str(binary), "install-service"]

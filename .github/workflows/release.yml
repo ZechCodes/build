@@ -65,8 +65,12 @@ jobs:
     outputs:
       version: ${{ steps.derive.outputs.version }}
       releases_repo: ${{ steps.derive.outputs.releases_repo }}
+      prerelease: ${{ steps.derive.outputs.prerelease }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The tag can be older than main's tip. Fetch both histories.
+          fetch-depth: 0
 
       - id: derive
         env:
@@ -88,6 +92,18 @@ jobs:
             echo "::error::tag ${TAG} wants ${version}, which bridge/Cargo.toml does not declare"
             exit 1
           fi
+          # HEAD is the checked-out commit, including for an annotated tag.
+          ancestry_status=0
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main || ancestry_status=$?
+          case "$ancestry_status" in
+            0) prerelease=false ;;
+            1) prerelease=true ;;
+            *)
+              echo "::error::cannot determine whether ${TAG} is on origin/main"
+              exit "$ancestry_status"
+              ;;
+          esac
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "releases_repo=${RELEASES_REPO}" >> "$GITHUB_OUTPUT"
           echo "releasing build-bridge ${version} to ${RELEASES_REPO}"
@@ -449,7 +465,9 @@ jobs:
           ls -l
 
       - name: Release notes
+        id: notes
         env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
           VERSION: ${{ needs.version.outputs.version }}
           SIGNED: ${{ needs.apple-creds.outputs.configured }}
           COMMIT: ${{ github.sha }}
@@ -464,12 +482,15 @@ jobs:
           else
             macos_line="macOS binaries are **unsigned and not notarized**. macOS will warn on first run; open System Settings → Privacy & Security and allow it."
           fi
+          if [ "$PRERELEASE" = "true" ]; then
+            install_notes=$'This is a pre-release cut from `dev`.\n\nDownload this build from the assets below.'
+          else
+            install_notes=$'Install:\n\n    curl -fsSL https://getbuild.ing/install.sh | sh'
+          fi
           cat >> notes.md <<NOTES
           build-bridge ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
 
-          Install:
-
-              curl -fsSL https://getbuild.ing/install.sh | sh
+          ${install_notes}
 
           ${macos_line}
           Linux builds target glibc 2.35 or newer; macOS builds target macOS 13 or newer.
@@ -504,19 +525,28 @@ jobs:
           done < <(find "$ASSETS" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
           gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}"
 
-      # The tag is created on the releases repo here, when the draft publishes,
-      # and the release becomes the latest one the self-update follows. A
-      # re-run on a release that is already public leaves it, and which
-      # release is latest, as they were.
+      # The tag is created on the releases repo when the draft publishes.
+      # Only a tag whose commit is on main can become latest. If the release is
+      # already public, its publication flags and notes stay as they were.
       - name: Publish the release once every asset is up
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ needs.version.outputs.releases_repo }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
           draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)"
           if [ "$draft" = "true" ]; then
-            gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+            case "$PRERELEASE" in
+              true) release_flags=(--prerelease --latest=false) ;;
+              false) release_flags=(--latest) ;;
+              *)
+                echo "::error::invalid prerelease classification: ${PRERELEASE}"
+                exit 1
+                ;;
+            esac
+            gh release edit "$TAG" --repo "$REPO" --draft=false "${release_flags[@]}" --notes-file notes.md
           fi
           echo "published https://github.com/${REPO}/releases/tag/${TAG}"

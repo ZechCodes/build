@@ -257,3 +257,16 @@ it("paints a standing workspace operation once and retains its pending facts thr
     await vi.waitFor(paintedOnce);
   } finally { release(); }
 });
+
+it("finishes a multi-day HTTPS catch-up within the device snapshot lease and repaints from the cache", async () => {
+  const { httpsDeviceSnapshot } = await import("./fixtures/httpsDeviceSnapshot.js");
+  const fixture = await httpsDeviceSnapshot();
+  try {
+    expect(await startEngine(fixture.request)).toBe(true);
+    fixture.advanceThreeDays();
+    const [recovered] = await engine.foreground();
+    expect({ recovered, ...fixture.counts }).toMatchObject({ recovered: true, expiries: 0, overBudget: 1 });
+    const last = await cache.readCached({ ...address("sync-device-record"), sub: JSON.stringify(["identity", "agent-3499"]) });
+    expect(last?.value?.row.name).toBe("Agent 3499");
+  } finally { fixture.close(); }
+});

@@ -674,3 +674,12 @@ it("cursor persistence failure rolls the whole device publication back", async (
   finally { refusal.mockRestore(); }
   expect(await raw("projects")).toBeUndefined(); expect(await writer.readCursor()).toBeUndefined();
 });
+
+it("accepts a committed reset with an already absent cursor after a lease expires", async () => {
+  const writer = create();
+  const capture = await writer.capture();
+  expect(await writer.reset({ capture, expectedCursor: null, accept: () => false })).toBe(false);
+  expect(await writer.reset({ capture, expectedCursor: "other-tab" })).toBe(false);
+  expect(await writer.reset({ capture, expectedCursor: null })).toBe(true);
+  expect(await writer.readCursor()).toBeUndefined();
+});

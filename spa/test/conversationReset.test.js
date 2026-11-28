@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { threadWindow, syncThreadWindow } from "../src/core/threadSync.js";
 import { widenCachedThread } from "../src/core/agentRailContext.js";
 import { createChatRepository } from "../src/core/chatRepository.js";
 import { applyConversationReset, reconcileConversationGeneration } from "../src/core/conversationReset.js";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import * as cache from "../src/core/localCache.js";
+import { recordKey } from "../src/core/idbRecords.js";
 import { createCompactionChoice } from "../src/core/conversationCompaction.js";
 import { createWatchToggle } from "../src/core/watchToggle.js";
 import { insertRecord } from "../src/core/optimistic.js";
@@ -17,17 +18,23 @@ const item = (sequence, body) => ({ type: "message", data: { sequence, id: `m${s
 const held = { thread_id: "new-thread", items: [item(4, "fresh words")], deliveredSequence: 4, activityDigests: [] };
 beforeEach(async () => { await wipeCache(); });
 
-it("checks repeated current generations without taking the cache write lane", async () => {
+it("checks repeated current generations without taking the cache write lane or reading bulk records", async () => {
   await writeCached(address, held);
   const transaction = vi.spyOn(IDBDatabase.prototype, "transaction");
+  const readValues = vi.spyOn(IDBObjectStore.prototype, "getAll");
+  const readKeys = vi.spyOn(IDBObjectStore.prototype, "getAllKeys");
   try {
     for (let index = 0; index < 3; index += 1) {
       await reconcileConversationGeneration({ ...address,
         agent: { id: "agent-1", conversation_id: address.sub, thread_id: held.thread_id } });
     }
     expect(transaction.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(0);
+    expect(readValues).not.toHaveBeenCalled();
+    expect(readKeys).not.toHaveBeenCalled();
   } finally {
     transaction.mockRestore();
+    readValues.mockRestore();
+    readKeys.mockRestore();
   }
 });
 
@@ -182,6 +189,59 @@ it("immediately replaces cached alias generations and summaries on another owner
   expect(otherRow.thread.items).toEqual([]);
   expect(otherRow.summary).toBe("");
   expect((await readCached(otherThreadAddress)).value.items).toEqual([]);
+});
+
+it("replaces roster and row aliases in bounded reads without loading patch or activity bodies", async () => {
+  const { agent, previous_thread_id: oldThreadId } = resetAnswer();
+  const oldAgent = { ...agent, thread_id: oldThreadId, thread_generation_revision: 0 };
+  const roster = { ...rowAddress, entityId: "z-project", kind: "project-agents" };
+  const rowAlias = { ...oldAgent, id: "row-alias" };
+  const rosterAlias = { ...oldAgent, id: "roster-alias" };
+  const sibling = { id: "sibling", conversation_id: "other-conversation", thread_id: "other-thread" };
+  await writeCached(address, { thread_id: oldThreadId, items: [item(1, "old words")] });
+  await writeCached(rowAddress, { agents: [oldAgent, rowAlias, sibling] });
+  await writeCached(roster, { agents: [rosterAlias] });
+  const otherRows = Array.from({ length: 40 }, (_, index) => ({ ...rowAddress, entityId: `other-${index}` }));
+  await Promise.all(otherRows.map((row) => writeCached(row, { agents: [sibling] })));
+  const activity = (owner, sub) => ({ ...owner, kind: "activity", sub });
+  const retired = [
+    activity(rowAddress, `${rowAlias.id}:${oldThreadId}:run-1`),
+    activity(roster, `${rosterAlias.id}:run-2`),
+  ];
+  const kept = [
+    activity(rowAddress, `${rowAlias.id}:${agent.thread_id}:run-3`),
+    activity(rowAddress, `${sibling.id}:run-4`),
+    { ...address, kind: "patch", sub: "commit-1" },
+    { ...address, entityId: "unrelated-checkout", kind: "patch", sub: "commit-2" },
+  ];
+  await Promise.all([...retired, ...kept].map((at) => writeCached(at, { body: "cached body" })));
+
+  const readValues = vi.spyOn(IDBObjectStore.prototype, "getAll");
+  const readRecord = vi.spyOn(IDBObjectStore.prototype, "get");
+  try {
+    expect(await reconcileConversationGeneration({ ...address, agent })).toBe(true);
+    expect(readValues).not.toHaveBeenCalled();
+    const readKeys = readRecord.mock.calls.map(([key]) => key);
+    for (const at of [...retired, ...kept]) expect(readKeys).not.toContain(recordKey(at));
+    const aliasSourceKeys = new Set([rowAddress, roster, ...otherRows].map(recordKey));
+    const batches = new Map();
+    readRecord.mock.calls.forEach(([key], index) => {
+      const { transaction } = readRecord.mock.contexts[index];
+      if (transaction.mode !== "readonly" || !aliasSourceKeys.has(key)) return;
+      batches.set(transaction, (batches.get(transaction) || 0) + 1);
+    });
+    expect(batches.size).toBeGreaterThan(1);
+    expect(Math.max(...batches.values())).toBeLessThanOrEqual(32);
+  } finally {
+    readValues.mockRestore();
+    readRecord.mockRestore();
+  }
+  expect((await readCached(rowAddress)).value.agents).toEqual([agent,
+    expect.objectContaining({ id: rowAlias.id, thread_id: agent.thread_id }), sibling]);
+  expect((await readCached(roster)).value.agents).toEqual([
+    expect.objectContaining({ id: rosterAlias.id, thread_id: agent.thread_id })]);
+  expect(await Promise.all(retired.map(readCached))).toEqual([undefined, undefined]);
+  expect((await Promise.all(kept.map(readCached))).map((record) => record.value.body)).toEqual(kept.map(() => "cached body"));
 });
 
 it("keeps model, watching and compaction mutations tied to the fresh generation", async () => {

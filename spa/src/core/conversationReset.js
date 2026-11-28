@@ -1,6 +1,7 @@
 // Reset is a new transcript generation under the conversation's stable address.
 // Write an authoritative empty window before publishing its replacement agent.
-import { cachedRecords, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached, readCanonicalCached } from "./localCache.js";
+import { cachedAddresses, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached,
+  readCanonicalCached, readCanonicalCachedMany } from "./localCache.js";
 import { purgeConversationUiRecords } from "./localUiState.js";
 import { forgetConversationRevisionBodies } from "./revisionBodies.js";
 import { closeConversationAttachmentLightboxes } from "./threadAttachmentLightbox.js";
@@ -8,6 +9,8 @@ import { retireConversationFeed } from "./conversationFeedReset.js";
 import { notePush } from "./pushFence.js";
 
 export { conversationResetSupportAddress, rememberConversationResetSupport } from "./conversationResetSupport.js";
+
+const ALIAS_ROW_BATCH_SIZE = 32;
 
 export const emptyConversationWindow = (threadId, revision = 0) => ({
   thread_id: threadId, thread_generation_revision: revision, items: [], deliveredSequence: 0, olderItemsRemain: false,
@@ -79,8 +82,8 @@ const obsoleteGeneration = (held, agent) => held?.retired_thread_ids?.includes(a
   || Number(held?.thread_generation_revision || 0) > Number(agent.thread_generation_revision || 0);
 
 async function retireConversationAliases(ownership, agent) {
-  const records = await cachedRecords({ deviceId: ownership.deviceId });
-  const aliases = conversationAliases(records, ownership);
+  const addresses = await cachedAddresses({ deviceId: ownership.deviceId });
+  const aliases = await conversationAliases(addresses, ownership);
   for (const entityId of new Set(aliases.map((alias) => alias.entityId))) {
     const owner = { ...ownership, entityId };
     await publishAliasGeneration(owner, agent);
@@ -91,8 +94,8 @@ async function retireConversationAliases(ownership, agent) {
     closeConversationAttachmentLightboxes(alias);
     await purgeConversationUiRecords(alias);
   }
-  const activities = records.filter((record) => oldActivityRecord(record, ownership.threadId, aliases));
-  await deleteCached([...aliases.map(({ deviceId, entityId, agentId }) => ({ deviceId, entityId, kind: "surfaces", sub: agentId })), ...activities.map(({ address }) => address)]);
+  const activities = addresses.filter((address) => oldActivityAddress(address, ownership.threadId, aliases));
+  await deleteCached([...aliases.map(({ deviceId, entityId, agentId }) => ({ deviceId, entityId, kind: "surfaces", sub: agentId })), ...activities]);
 }
 
 async function publishAliasGeneration(ownership, agent) {
@@ -127,18 +130,23 @@ function resetAliasAgent(agent, answer) {
     session_cache_read_tokens: null, surfaces: null };
 }
 
-function conversationAliases(records, ownership) {
+async function conversationAliases(addresses, ownership) {
   const aliases = new Map([[`${ownership.entityId}:${ownership.agentId}`, ownership]]);
-  for (const { address, value } of records) {
-    if (address.kind !== "row" && address.kind !== "project-agents") continue;
-    for (const agent of value?.agents || []) {
-      if ((agent.conversation_id || agent.id) !== ownership.conversationId) continue;
-      aliases.set(`${address.entityId}:${agent.id}`, { ...ownership, entityId: address.entityId, agentId: agent.id });
-    }
+  const rows = addresses.filter(({ kind }) => kind === "row" || kind === "project-agents");
+  // Keep only one batch of canonical rows and rosters in memory at a time.
+  for (let start = 0; start < rows.length; start += ALIAS_ROW_BATCH_SIZE) {
+    const batch = rows.slice(start, start + ALIAS_ROW_BATCH_SIZE);
+    const records = await readCanonicalCachedMany(batch);
+    batch.forEach(({ entityId }, index) => {
+      for (const agent of records[index]?.value?.agents || []) {
+        if ((agent.conversation_id || agent.id) !== ownership.conversationId) continue;
+        aliases.set(`${entityId}:${agent.id}`, { ...ownership, entityId, agentId: agent.id });
+      }
+    });
   }
   return [...aliases.values()];
 }
-const oldActivityRecord = ({ address }, threadId, aliases) => address.kind === "activity"
+const oldActivityAddress = (address, threadId, aliases) => address.kind === "activity"
   && (address.sub.includes(`:${threadId}:`) || aliases.some(({ entityId, agentId }) =>
     address.entityId === entityId && address.sub.startsWith(`${agentId}:`) && address.sub.split(":").length === 2));
 

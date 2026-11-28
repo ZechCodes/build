@@ -14,10 +14,10 @@ import { projectIsArchived, visibleProjectRows } from "./archivedProjectModel.js
 // Blocks start open; each block's Recent starts closed, including when all its
 // rows are quiet. The chevron folds the whole block and remembers that choice.
 // A block with no rows has nothing to fold, so its chevron is disabled.
-// Blocks sort by their longest-running active entry, including the project
-// conversation. Names, device tags and project keys break ties; quiet and
-// empty projects follow active ones. Rows inside keep their anchor order and per-block
-// Recent partition, the same as the ungrouped inbox.
+// Within each environment and among legacy blocks, projects with standing rows
+// come first. Their oldest active streak, including the project conversation,
+// orders them. Names, device tags and project keys break ties. Rows inside
+// keep the same anchor order and Recent rule as the ungrouped inbox.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -80,8 +80,11 @@ const entryIsWatchedRunning = (entry) => entry?.watchedWorking ?? entryIsRunning
 function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys, heldActiveKey) {
   const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
   const grouped = [...rows].sort(byAnchor);
-  const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs, heldActiveKey));
-  const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs, heldActiveKey));
+  const entries = [];
+  const recent = [];
+  for (const entry of grouped) {
+    (workspaceIsRecent(entry, nowMs, heldActiveKey) ? recent : entries).push(entry);
+  }
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -89,7 +92,7 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys, he
     deviceId: project.deviceId,
     ...tag,
     name: projectNameOf(project),
-    anchorMs: longestActiveAnchor(rows, nowMs, heldActiveKey),
+    anchorMs: longestActiveAnchor(entries),
     isGit: project.is_git !== false,
     entries,
     recent,
@@ -144,9 +147,10 @@ function compareEnvironmentBlocks(left, right) {
     return leftEnvironment.environmentName.localeCompare(rightEnvironment.environmentName)
       || leftEnvironment.key.localeCompare(rightEnvironment.key);
   }
-  // Keep legacy blocks in a separate stable partition in mixed accounts, so
-  // anchor comparisons cannot split siblings of a capable environment.
+  // Keep legacy blocks together in mixed accounts and compare standing rows
+  // and streaks only within the same environment or among legacy blocks.
   return Number(!!rightEnvironment) - Number(!!leftEnvironment)
+    || Number(right.entries.length > 0) - Number(left.entries.length > 0)
     || byAnchor(left, right) || byProjectName(left, right);
 }
 

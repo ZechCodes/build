@@ -18,10 +18,8 @@ export function byAnchor(left, right) {
   return left.anchorMs - right.anchorMs;
 }
 
-/** Recent rows cannot hold a project above one with active work. The project
- * conversation participates alongside its watched workspaces and tasks. */
-export function longestActiveAnchor(entries, nowMs, heldActiveKey = null) {
-  const active = entries.filter((entry) => !workspaceIsRecent(entry, nowMs, heldActiveKey)
-    && Number.isFinite(entry.anchorMs));
-  return active.reduce((oldest, entry) => Math.min(oldest ?? entry.anchorMs, entry.anchorMs), null);
+/** The oldest dated streak among a project's standing rows. */
+export function longestActiveAnchor(entries) {
+  return entries.reduce((oldest, { anchorMs }) =>
+    Number.isFinite(anchorMs) ? Math.min(oldest ?? anchorMs, anchorMs) : oldest, null);
 }

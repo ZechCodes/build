@@ -399,7 +399,8 @@ const sourceFingerprintParts = {
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
-  "core/inboxView.js": ["4e509fa0", "b5b4c3a9", "1da784d7", "0e8b2f5e", "4cba39af", "822a2341", "4b3ec0a2", "fa437d50"],
+  // #1205: Keep focus on project controls when blocks move.
+  "core/inboxView.js": ["1d39d647", "bb675dc2", "e94e5c01", "aa4ea52e", "7105c9f7", "8a68ea7d", "651ecdbf", "6ae80756"],
   // #1065: isolation readers follow the settings opening lifetime; RPC methods and parameter producers are unchanged.
   "core/isolation.js": ["3ccd3f81", "a4eb1eaa", "73e246dd", "8d2d19d8", "a3386e0b", "2e7bae06", "0cff87d2", "655ef105"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],

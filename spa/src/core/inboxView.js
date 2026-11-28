@@ -154,11 +154,12 @@ function heldAway(entry) {
 }
 
 
-/** DOM moves can blur an editor or project link. Keep keyboard focus and
+/** DOM moves can blur a focused control. Keep keyboard focus and
  * input selection while cached activity reorders rows and whole blocks. */
 function preserveRowFocus(list) {
   const focused = document.activeElement;
-  const retained = focused?.matches("input, .reroute-branch [data-reroute-kind='branch'], .inbox-project-agent[role='link']");
+  const retained = focused?.closest(".inbox-project")
+    || focused?.matches("input, .reroute-branch [data-reroute-kind='branch'], .inbox-project-agent[role='link']");
   if (!list.contains(focused) || !retained) return () => {};
   const { selectionStart, selectionEnd, selectionDirection } = focused;
   return () => {

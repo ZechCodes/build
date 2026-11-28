@@ -213,6 +213,62 @@ it.each(["inbox", "projects"])("folds at the exact 24h cutoff without another pu
   if (view === "projects") expect(recent.closest(".inbox-project").dataset.project).toBe(`${DEVICE}/zulu`);
 });
 
+it("moves a mounted project below undated standing work at cutoff and back on new activity", async () => {
+  const deadline = NOW + 10_000;
+  const [alpha, zulu] = projects;
+  const conversation = { kind: "branch", run_id: "alpha-run", project_id: alpha.id, deviceId: DEVICE,
+    projectKey: alpha.projectKey, session_started_ms: deadline - DAY - HOUR, last_activity_ms: deadline - DAY };
+  const quiet = workspace("quiet", alpha.id, NOW - 2 * DAY, NOW - 2 * DAY);
+  await modules.cache.writeCached(address("projects"), [{ ...alpha, entity_id: conversation.run_id }, zulu]);
+  await boot("projects", [], [conversation]);
+  await modules.cache.writeCached(address("workspaces"), [quiet]);
+
+  const list = document.querySelector("#inbox-list");
+  const block = (project) => list.querySelector(`[data-project="${project.projectKey}"]`);
+  const agentSelector = (project) => `[data-key="project-agent:${project.projectKey}"]`;
+  await vi.waitFor(() => expect(block(zulu)?.querySelector(agentSelector(zulu))).toBeTruthy(), WAIT);
+  const alphaBlock = block(alpha);
+  const zuluBlock = block(zulu);
+  const zuluRow = zuluBlock.querySelector(agentSelector(zulu));
+  const alphaAgent = agentSelector(alpha);
+  const recentToggle = () => alphaBlock.querySelector("[data-recent-toggle]");
+  await vi.waitFor(() => expect(recentToggle()).not.toBeNull(), WAIT);
+  const toggle = recentToggle();
+  toggle.click();
+  const quietRow = () => alphaBlock.querySelector(`[data-key="${rowKey(quiet.id)}"]`);
+  await vi.waitFor(() => expect(quietRow()).not.toBeNull(), WAIT);
+  const oldRow = quietRow();
+  alphaBlock.querySelector("[data-project-fold]").click();
+  await vi.waitFor(() => expect(alphaBlock.classList.contains("inbox-folded")).toBe(true), WAIT);
+  const heading = alphaBlock.querySelector(".inbox-project-name");
+  heading.focus();
+  expect(document.activeElement).toBe(heading);
+  list.scrollTop = 37;
+
+  await vi.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+  expect(blockKeys()).toEqual([alpha.projectKey, zulu.projectKey]);
+  expect(alphaBlock.querySelector(".inbox-project-rows").querySelector(alphaAgent)).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(blockKeys()).toEqual([zulu.projectKey, alpha.projectKey]);
+  expect(alphaBlock.querySelector(".inbox-recent").querySelector(alphaAgent)).not.toBeNull();
+  expect(document.activeElement).toBe(heading);
+  expect(list.scrollTop).toBe(37);
+
+  const renewed = { ...conversation, session_started_ms: deadline, last_activity_ms: deadline };
+  await modules.cache.writeCached(address("feed"), { items: [renewed], runs: [] });
+  await vi.waitFor(() => expect(blockKeys()).toEqual([alpha.projectKey, zulu.projectKey]), WAIT);
+  expect(alphaBlock.querySelector(".inbox-project-rows").querySelector(alphaAgent)).not.toBeNull();
+  expect(block(alpha)).toBe(alphaBlock);
+  expect(block(zulu)).toBe(zuluBlock);
+  expect(zuluBlock.querySelector(agentSelector(zulu))).toBe(zuluRow);
+  expect(alphaBlock.classList.contains("inbox-folded")).toBe(true);
+  expect(recentToggle()).toBe(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(quietRow()).toBe(oldRow);
+  expect(document.activeElement).toBe(heading);
+  expect(list.scrollTop).toBe(37);
+});
+
 it.each(["inbox", "projects"])("rechecks suspended time when the page becomes visible in %s", async (view) => {
   await boot(view, [workspace("suspended", "zulu", NOW - HOUR, NOW)]);
   vi.setSystemTime(NOW + DAY);

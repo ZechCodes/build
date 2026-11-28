@@ -6166,11 +6166,16 @@ When only descendant news lights a coordinator's dot, its tooltip says
 "A worker has unread messages"; its own unread retains "Unread activity".
 The head offers Hide and New workspace directly.
 
-The Projects face lists every project in one list ordered by the oldest
-current streak start among its active watched entries, including the project's
-own conversation. Projects with only Recent rows or no dated activity follow
-active projects; case-insensitive name, device-tag and project-key collation
-breaks ties. The toolbar's project picker retains alphabetical order.
+The Projects face lists projects with standing rows before projects with only
+Recent rows or no rows, within each environment and among legacy projects.
+A row with no dated activity still counts as standing if it is outside Recent.
+Standing projects are ordered by their oldest dated active streak, including
+the project's own conversation, with undated projects following dated ones.
+Case-insensitive name, device name and project key break ties. The same
+partition supplies each block's Recent rows and its place in the list, so the
+cutoff clock moves the existing block as soon as its last standing row folds.
+A cache update that restores a standing row moves the block back. The
+toolbar's project picker retains alphabetical order.
 Project blocks have transparent backgrounds; only the active head has an accent
 tint. Every block starts open unless the user saved a fold, with its live rows
 in anchor order followed by one project-keyed Recent disclosure. Recent starts

@@ -66,14 +66,23 @@ describe("workspace project blocks", () => {
     expect(ranked().map((block) => block.id)).toEqual(["p2", "p1"]);
   });
 
-  it("places projects with dated active rows ahead of quiet or empty projects", () => {
-    const projects = [on("dev-1", { id: "quiet", name: "Alpha" }), on("dev-1", { id: "live", name: "Zulu" })];
+  it("places every project with standing rows ahead of quiet and empty projects", () => {
+    const projects = [
+      on("dev-1", { id: "quiet", name: "Alpha" }),
+      on("dev-1", { id: "empty", name: "Beta" }),
+      on("dev-1", { id: "dated", name: "Charlie" }),
+      on("dev-1", { id: "undated", name: "Zulu" }),
+    ];
     const now = 100 * 3600_000;
     const rows = [
       entry("quiet", "quiet", "Alpha", 0, { anchorMs: 1, lastActivityMs: 1 }),
-      entry("live", "live", "Zulu", 0, { anchorMs: now - 100, lastActivityMs: now }),
+      entry("dated", "dated", "Charlie", 0, { anchorMs: now - 100, lastActivityMs: now }),
+      entry("undated", "undated", "Zulu"),
     ];
-    expect(workspaceProjectBlocks(rows, projects, [], null, now).blocks.map((block) => block.id)).toEqual(["live", "quiet"]);
+    const { blocks } = workspaceProjectBlocks(rows, projects, [], null, now);
+    expect(blocks.map((block) => block.id)).toEqual(["dated", "undated", "quiet", "empty"]);
+    expect(blocks.map((block) => block.entries.length)).toEqual([1, 1, 0, 0]);
+    expect(blocks.map((block) => block.recent.length)).toEqual([0, 0, 1, 0]);
   });
 
   it("keeps a month-old project in its alphabetical place without a project Recent partition", () => {
@@ -136,12 +145,12 @@ describe("workspace project blocks", () => {
       ],
       [{ id: "dev-1", name: "Laptop" }],
     );
-    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p2", "dev-1/p1", "dev-1/p9"]);
-    expect(blocks.map((block) => keys(block.entries))).toEqual([[], ["workspace:dev-1/one"], ["workspace:dev-1/two"]]);
-    expect(blocks.map((block) => block.unreadCount)).toEqual([0, 2, 3]);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1", "dev-1/p9", "dev-1/p2"]);
+    expect(blocks.map((block) => keys(block.entries))).toEqual([["workspace:dev-1/one"], ["workspace:dev-1/two"], []]);
+    expect(blocks.map((block) => block.unreadCount)).toEqual([2, 3, 0]);
     expect(keys(unsorted)).toEqual(["workspace:dev-1/loose"]);
-    expect(projectHeadHtml(blocks[1], {})).toContain('data-project-create="dev-1/p1"');
-    expect(projectHeadHtml(blocks[1], {})).toContain("New workspace in Same");
+    expect(projectHeadHtml(blocks[0], {})).toContain('data-project-create="dev-1/p1"');
+    expect(projectHeadHtml(blocks[0], {})).toContain("New workspace in Same");
   });
 
   it("makes the heading a fold control while retaining the project row's destination", () => {
@@ -151,10 +160,10 @@ describe("workspace project blocks", () => {
     ];
     const { blocks } = workspaceProjectBlocks([entry("one", "p1", "Project")], projects);
     expect(blocks.map((block) => block.route)).toEqual([
-      { name: "project", projectId: "p2", deviceId: "dev-1" },
       { name: "project", projectId: "p1", deviceId: "dev-1" },
+      { name: "project", projectId: "p2", deviceId: "dev-1" },
     ]);
-    const head = projectHeadHtml(blocks[0], {});
+    const head = projectHeadHtml(blocks[1], {});
     expect(head).not.toContain("inbox-unroutable");
     expect(head).not.toContain("data-project-open");
     expect(head).toContain('class="inbox-project-name" type="button" data-project-fold="dev-1/p2"');
@@ -369,6 +378,13 @@ describe("environment inbox identities", () => {
     const blocks = workspaceProjectBlocks(rows, projects, devices, null, 100, new Set(), null, { ...environmentNavigation, support: {} }).blocks;
     expect(blocks.map(block => block.id)).toEqual(["z", "b", "a"]);
     expect(projectHeadHtml(blocks[0])).not.toContain('data-kind="project"');
+  });
+
+  it("puts standing siblings first while keeping their environment together", () => {
+    const held = rows.filter((row) => row.projectId !== "a").map((row) =>
+      row.projectId === "z" ? { ...row, anchorMs: null } : row);
+    const { blocks } = workspaceProjectBlocks(held, projects, devices, null, 100, new Set(), null, environmentNavigation);
+    expect(blocks.map((block) => block.id)).toEqual(["z", "a", "b"]);
   });
 });
 

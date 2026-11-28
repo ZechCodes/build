@@ -2,7 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OPENING_READ_WAIT_MS, createOpeningPosition } from "../src/core/openingPosition.js";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 const paint = (landing, body, extra = {}) => {
   Object.defineProperty(body, "clientHeight", { configurable: true, value: 300 });
   return landing.prepare(body, { hasItems: true, target: null, waitingForHistory: false, ...extra });
@@ -87,6 +90,43 @@ describe("the opening landing's bounded read wait", () => {
     expect(second.canLand()).toBe(false);
   });
 
+  it.each(["reset", "dispose"])("%s disconnects resize tracking and protects the next view", (endVisit) => {
+    const observed = new Set();
+    const disconnect = vi.fn(() => observed.clear());
+    let resize;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(onResize) {
+        this.disconnect = disconnect;
+        resize = (target) => { if (observed.has(target)) onResize(); };
+      }
+      observe(target) { observed.add(target); }
+    });
+    const landing = createOpeningPosition(() => {});
+    const body = document.createElement("div");
+    const oldTimeline = body.appendChild(document.createElement("section"));
+    const previousPosition = vi.fn(() => {
+      body.scrollTop = 250;
+      return true;
+    });
+    paint(landing, body).onLand(true, previousPosition);
+    landing.painted(oldTimeline);
+    expect(observed).toEqual(new Set([body, oldTimeline]));
+    previousPosition.mockClear();
+    resize(oldTimeline);
+    expect(previousPosition).toHaveBeenCalledOnce();
+    previousPosition.mockClear();
+
+    landing[endVisit]();
+    body.replaceChildren(document.createElement("section"));
+    body.scrollTop = 40;
+    resize(body);
+    expect(body.scrollTop).toBe(40);
+    expect(previousPosition).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(observed.size).toBe(0);
+    if (endVisit === "reset") landing.dispose();
+  });
+
   it("reader motion abandons the landing and releases its report wait", () => {
     const resumed = vi.fn();
     const landing = createOpeningPosition(resumed);
@@ -122,4 +162,23 @@ describe("the opening landing's bounded read wait", () => {
       landing.dispose();
     },
   );
+
+  it.each(["Enter", " ", "click"])("releases the opening before a transcript control handles %j", (activation) => {
+    const landing = createOpeningPosition(() => {});
+    const body = document.createElement("div");
+    const button = body.appendChild(document.createElement("button"));
+    const visit = paint(landing, body, { waitingForHistory: true });
+    const type = activation === "click" ? "click" : "keydown";
+    const handled = vi.fn((event) => {
+      event.stopPropagation();
+      return visit.canLand();
+    });
+    button.addEventListener(type, handled);
+    if (type === "click") button.click();
+    else button.dispatchEvent(new KeyboardEvent(type, { key: activation, bubbles: true }));
+    expect(handled).toHaveBeenCalledOnce();
+    expect(handled).toHaveReturnedWith(false);
+    expect(landing.waiting()).toBe(false);
+    landing.dispose();
+  });
 });

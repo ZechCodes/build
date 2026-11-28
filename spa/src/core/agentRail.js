@@ -31,7 +31,7 @@ import { agentIsRunning } from "./agentRunning.js";
 import { setAttr, setData } from "../dom.js";
 import { AGENT_CAPABILITIES, AGENT_ROLES, modelForRole } from "./agentRoles.js";
 import { wireReaderMotion } from "./paintKeepingPlace.js";
-import { createChatLanding } from "./chatLanding.js";
+import { createOpeningPosition } from "./openingPosition.js";
 import { chatOverlaysPage, panelDocksByDefault } from "./railLayout.js";
 import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
@@ -1225,7 +1225,7 @@ function mountRailOnContext(host, context, swap) {
   let unreadFrom = null; // where the unread line stands in that conversation
   const unreadMarkers = new Map();
   let unreadMarker = null;
-  const chatLanding = createChatLanding((body) => reportAfterLanding(body), () => paintChat());
+  const chatLanding = createOpeningPosition((body) => reportAfterLanding(body), () => paintChat());
   const leaveUnreadMarker = () => {
     chatLanding.reset();
     unreadMarker?.leave();
@@ -3182,7 +3182,7 @@ function mountRailOnContext(host, context, swap) {
         paintThreadEntries(body, built);
         wireTimeline(body);
       }, { olderItemsPrepended, ...landing });
-      chatLanding.painted();
+      chatLanding.painted(body.querySelector(".review-thread"));
       syncUserMessageTicks(body);
     });
   };

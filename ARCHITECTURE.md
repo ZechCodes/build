@@ -5641,15 +5641,20 @@ them into new code; each is a candidate to bring under the rule.
     read. A surface stood up on a machine's records after that read shows no
     strip until the next one.
 
-Chat openings use a visit state (`spa/src/core/chatLanding.js`) independently
+Chat openings use a visit state (`spa/src/core/openingPosition.js`) independently
 of the retained transcript DOM. They land on New with 12 pixels of headroom,
 or at the end when nothing is unread; scroll positions are never restored on
 open. While an unread cursor is missing, the slice reaches the oldest cached
 row and the opening stays at the start rather than skipping to the tail.
 Missing transcript/cursor data and unread history pages can correct that
-landing until the reader moves. `agentRail.js` loads older cached transcript
-pages back to the read cursor. Its call sites wait for opening layout and
-history before reporting read, bounded by `CHAT_LANDING_READ_WAIT_MS` (5 seconds);
+landing until the reader moves. The first transcript paint applies the position
+synchronously. The visit holds the original line or the bottom through later
+transcript paints and observes timeline and viewport resizing for layout
+changes such as image decoding. Reader input releases that opening position
+and hands back to the ordinary reading and stick-to-bottom policies.
+`agentRail.js` loads older cached transcript pages back to the read cursor.
+Its call sites wait for initial layout and
+history before reporting read, bounded by `OPENING_READ_WAIT_MS` (5 seconds);
 settlement, reader takeover (even input without scrolling) or timeout releases
 reports of the rows the viewport has reached. The read calculation
 itself is unchanged. Roster hydration rebinds the transcript subscription when

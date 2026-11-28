@@ -1,11 +1,10 @@
-// An opening belongs to a visit, not to the transcript DOM: chat switches keep
-// that DOM mounted and cache/roster reads can fill it after its first paint.
-export const CHAT_LANDING_READ_WAIT_MS = 5000;
+// A visit owns its opening position even when it reuses a mounted scroller.
+export const OPENING_READ_WAIT_MS = 5000;
 const targetArrived = (hasItems, held, next, wasAwaiting, awaiting) =>
   hasItems && ((next !== null && held !== next) || (wasAwaiting && !awaiting));
 const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
 
-export function createChatLanding(resumeReporting, repaint = () => {}) {
+export function createOpeningPosition(resumeReporting, repaint = () => {}) {
   let body = null;
   let generation = 0;
   let first = true;
@@ -18,35 +17,50 @@ export function createChatLanding(resumeReporting, repaint = () => {}) {
   let timer = null;
   let disposed = false;
   let resolved = false;
+  let place = null;
+  let content = null;
   let resizeObserver = null;
   const waiting = () => !expired && !abandoned && !resolved && (awaiting || framePending);
+  const stopWatchingLayout = () => {
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    content = null;
+    place = null;
+  };
   const abandon = () => {
     abandoned = true;
     framePending = false;
     clearTimeout(timer);
     timer = null;
+    stopWatchingLayout();
+  };
+  const takeOver = () => {
+    if (abandoned) return;
+    abandon();
+    resumeReporting(body);
   };
   const input = (event) => {
     if (event.type === "keydown" && !SCROLL_KEYS.has(event.key)) return;
-    abandon();
-    resumeReporting(body);
+    takeOver();
   };
-  const moved = () => expectedTop !== null && Math.abs(body.scrollTop - expectedTop) >= 1;
+  const moved = () => {
+    if (expectedTop === null || Math.abs(body.scrollTop - expectedTop) < 1) return false;
+    // Layout can reduce the scroll range and clamp the last write on its own.
+    const maximum = Math.max(0, body.scrollHeight - body.clientHeight);
+    return Math.abs(body.scrollTop - Math.min(expectedTop, maximum)) >= 1;
+  };
   const scroll = () => {
-    if (!moved()) return;
-    abandon();
-    resumeReporting(body);
+    if (!abandoned && moved()) takeOver();
   };
   const events = ["wheel", "touchstart", "pointerdown", "keydown"];
   const unbind = () => {
-    resizeObserver?.disconnect();
-    resizeObserver = null;
     if (!body) return;
     for (const type of events) body.removeEventListener(type, input);
     body.removeEventListener("scroll", scroll);
   };
   const reset = () => {
     generation += 1;
+    stopWatchingLayout();
     clearTimeout(timer);
     timer = null;
     first = true;
@@ -65,17 +79,31 @@ export function createChatLanding(resumeReporting, repaint = () => {}) {
     reset();
     for (const type of events) body.addEventListener(type, input, { passive: true });
     body.addEventListener("scroll", scroll, { passive: true });
-    if (typeof ResizeObserver === "function") {
-      let height = body.clientHeight;
-      resizeObserver = new ResizeObserver(() => {
-        const visible = height <= 0 && body.clientHeight > 0;
-        height = body.clientHeight;
-        if (!visible || abandoned || resolved || disposed) return;
+  };
+  const restore = () => {
+    if (place && !place()) stopWatchingLayout();
+    expectedTop = body.scrollTop;
+  };
+  const watchLayout = () => {
+    if (resizeObserver || abandoned || typeof ResizeObserver !== "function") return;
+    if (resolved && !place) return;
+    let visible = body.clientHeight > 0;
+    resizeObserver = new ResizeObserver(() => {
+      const hadViewport = visible;
+      visible = body.clientHeight > 0;
+      if (!visible || abandoned || disposed) return;
+      if (moved()) {
+        takeOver();
+      } else if (!hadViewport && !resolved) {
         first = true;
         repaint();
-      });
-      resizeObserver.observe(body);
-    }
+      } else {
+        restore();
+      }
+    });
+    // Content height catches media and code expansion. The scroller's content
+    // box also changes when its viewport or padding changes.
+    resizeObserver.observe(body);
   };
   const startWait = () => {
     if (timer !== null || expired || abandoned || resolved) return;
@@ -83,16 +111,25 @@ export function createChatLanding(resumeReporting, repaint = () => {}) {
       timer = null;
       expired = true;
       resumeReporting(body);
-    }, CHAT_LANDING_READ_WAIT_MS);
+    }, OPENING_READ_WAIT_MS);
   };
   return {
     reset,
     waiting,
     active: () => !abandoned && !resolved && !disposed,
-    painted: () => { if (body) expectedTop = body.scrollTop; },
+    painted(timeline = null) {
+      if (!body || abandoned) return;
+      if (timeline !== content && resizeObserver) {
+        if (content) resizeObserver.unobserve(content);
+        content = timeline;
+        if (content) resizeObserver.observe(content);
+      }
+      restore();
+    },
     prepare(scroller, { hasItems, target: nextTarget, waitingForHistory }) {
       bind(scroller);
       if (moved()) abandon();
+      watchLayout();
       startWait();
       const wasAwaiting = awaiting;
       awaiting = waitingForHistory || body.clientHeight <= 0;
@@ -107,11 +144,13 @@ export function createChatLanding(resumeReporting, repaint = () => {}) {
       return {
         opening,
         canLand: () => {
-          if (moved()) abandon();
-          return !disposed && !abandoned && generation === ticket;
+          if (disposed || abandoned || generation !== ticket) return false;
+          if (moved()) takeOver();
+          return !abandoned;
         },
-        onLand: (settled) => {
+        onLand: (settled, position) => {
           if (disposed || generation !== ticket) return;
+          place = position;
           expectedTop = body.scrollTop;
           framePending = !settled;
           if (settled && hasItems && !awaiting) {

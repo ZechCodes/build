@@ -8,13 +8,13 @@ it("lands delayed New at 12px before reporting and preserves reader control", as
       basePath,
       styles: 'body{display:block;height:auto} .rail-panel{position:relative;inset:auto;width:640px;height:300px;margin:20px} .thread-message{min-height:160px}',
     });
-    await loadBrowserModules(page, { thread: "src/core/thread.js", landing: "src/core/chatLanding.js" }, basePath);
+    await loadBrowserModules(page, { thread: "src/core/thread.js", landing: "src/core/openingPosition.js" }, basePath);
     const result = await page.evaluate(async () => {
       const { threadHtml, paintThreadKeepingPlace, readThroughSequence } = window.__layoutModules.thread;
-      const { createChatLanding } = window.__layoutModules.landing;
+      const { createOpeningPosition } = window.__layoutModules.landing;
       const body = document.querySelector("#scroller");
       const reports = [];
-      const landing = createChatLanding(() => reports.push(readThroughSequence(body)));
+      const landing = createOpeningPosition(() => reports.push(readThroughSequence(body)));
       const thread = { items: Array.from({ length: 30 }, (_, i) => ({
         type: "message", data: { sequence: i + 1, role: "agent", body: `Message ${i + 1}` },
       })) };
@@ -74,13 +74,13 @@ it("keeps a missing-cursor opening at the cached start and reports only visible 
       basePath,
       styles: 'body{display:block;height:auto} #scroller{width:640px;height:300px;margin:20px;overflow:auto} .thread-message{min-height:160px}',
     });
-    await loadBrowserModules(page, { thread: "src/core/thread.js", landing: "src/core/chatLanding.js" }, basePath);
+    await loadBrowserModules(page, { thread: "src/core/thread.js", landing: "src/core/openingPosition.js" }, basePath);
     const result = await page.evaluate(async () => {
       const { threadHtml, paintThreadKeepingPlace, readThroughSequence } = window.__layoutModules.thread;
-      const { createChatLanding, CHAT_LANDING_READ_WAIT_MS } = window.__layoutModules.landing;
+      const { createOpeningPosition, OPENING_READ_WAIT_MS } = window.__layoutModules.landing;
       const body = document.querySelector("#scroller");
       const reports = [];
-      const landing = createChatLanding(() => reports.push(readThroughSequence(body)));
+      const landing = createOpeningPosition(() => reports.push(readThroughSequence(body)));
       const thread = { items: Array.from({ length: 30 }, (_, i) => ({
         type: "message", data: { sequence: i + 1, role: "agent", body: `Message ${i + 1}` },
       })) };
@@ -95,7 +95,7 @@ it("keeps a missing-cursor opening at the cached start and reports only visible 
         return box.top >= viewport.top && box.bottom <= viewport.bottom;
       }).map((row) => Number(row.dataset.sequence));
       const earlyReports = [...reports];
-      await new Promise((done) => setTimeout(done, CHAT_LANDING_READ_WAIT_MS + 100));
+      await new Promise((done) => setTimeout(done, OPENING_READ_WAIT_MS + 100));
       landing.dispose();
       return { openingTop, fullyVisible, earlyReports, reports };
     });

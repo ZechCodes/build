@@ -335,7 +335,8 @@ const sourceFingerprintParts = {
   // #1099: Cache-only environment scope and composer preselection; existing create/revoke/post dispatch remains in its services.
   // #1111: consume the settings secret intent after the initial stand; RPC dispatch unchanged.
   // #1111: skip environment-secret observation without a metadata service; RPC dispatch unchanged.
-  "core/agentRail.js": ["40119cbb", "2f0a50a9", "3bfca039", "ec25d61b", "c74d37b8", "7964b64c", "47a2334a", "14708df4"],
+  // #1199: Keep the cache-painted chat landing through layout changes; transport consumers are unchanged.
+  "core/agentRail.js": ["bdccb94f", "9c2a66d2", "6200da24", "1efaf754", "a45f8ffb", "9d017306", "40965d49", "fee3f61c"],
   "core/agentRailContext.js": ["e175542d", "376171c6", "e04b61df", "847af2cf", "a3a2c56e", "8fbeb913", "9593b4cb", "50809f5c"],
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],

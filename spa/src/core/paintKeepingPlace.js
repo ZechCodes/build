@@ -200,33 +200,44 @@ function restoreReadingAnchor(scroller, held) {
 /// message, jumping them a page further back on every load.
 const keepPrependedHistory = (prepended, held) => prepended && !held.opening;
 
-function landConversation(scroller, landing, canLand, onLand) {
+function unreadLineTop(scroller, line) {
+  const viewport = scroller.getBoundingClientRect();
+  // The rail can scale while it opens. Convert viewport coordinates back to
+  // layout pixels before adding the distance to scrollTop.
+  const layoutHeight = scroller.offsetHeight;
+  const scale = layoutHeight && viewport.height ? viewport.height / layoutHeight : 1;
+  const above = (line.getBoundingClientRect().top - viewport.top) / scale;
+  const clearance = parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+  const wanted = scroller.scrollTop + above - clearance - LINE_HEADROOM_PX;
+  return Math.max(0, Math.min(wanted, scroller.scrollHeight - scroller.clientHeight));
+}
+
+function openingPosition(scroller, unreadSelector, fallbackToStart) {
+  const line = unreadSelector && scroller.querySelector(unreadSelector);
+  return () => {
+    // The old divider can expire or leave the slice. A later divider belongs
+    // to another unread burst and must not pull this visit to a new target.
+    if (line && !scroller.contains(line)) return false;
+    const top = line ? unreadLineTop(scroller, line) : fallbackToStart ? 0 : scroller.scrollHeight;
+    writeScrollTop(scroller, top);
+    return true;
+  };
+}
+
+function landConversation(scroller, place, canLand, onLand) {
   if (!canLand()) return;
-  writeScrollTop(scroller, landing(scroller));
+  place();
   const landedTop = scroller.scrollTop;
   const hasFrame = typeof requestAnimationFrame === "function";
-  onLand(!hasFrame);
+  onLand(!hasFrame, place);
   if (hasFrame) requestAnimationFrame(() => {
-    if (!canLand() || readerIsMoving(scroller) || Math.abs(scroller.scrollTop - landedTop) >= 1) return;
-    writeScrollTop(scroller, landing(scroller));
-    onLand(true);
+    if (!canLand()) return;
+    if (!readerIsMoving(scroller) && Math.abs(scroller.scrollTop - landedTop) < 1) place();
+    onLand(true, place);
   });
 }
 
 export function followConversation({ olderItemsPrepended = false, unreadSelector = null, canLand = () => true, onLand = () => {}, fallbackToStart = false } = {}) {
-  /// The scrollTop that puts the top of the unread line at the top of the
-  /// visible viewport, below any overlaid header declared by scroll padding,
-  /// or the caller's fallback when there is no line to land on.
-  /// Never past the end: a line in the last screenful cannot reach the top, and
-  /// asking for more than there is would only show the end anyway.
-  const landing = (scroller) => {
-    const line = unreadSelector && scroller.querySelector(unreadSelector);
-    if (!line) return fallbackToStart ? 0 : scroller.scrollHeight;
-    const above = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-    const clearance = parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
-    const wanted = scroller.scrollTop + above - clearance - LINE_HEADROOM_PX;
-    return Math.max(0, Math.min(wanted, scroller.scrollHeight - scroller.clientHeight));
-  };
   return {
     hold: (scroller, opening) => ({
       opening,
@@ -248,7 +259,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
         else writeScrollTop(scroller, held.scrollTop);
         return;
       }
-      landConversation(scroller, landing, canLand, onLand);
+      landConversation(scroller, openingPosition(scroller, unreadSelector, fallbackToStart), canLand, onLand);
     },
   };
 }

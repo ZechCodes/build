@@ -14,12 +14,13 @@ afterAll(async () => { await session?.close(); });
 async function loadShell(page, basePath) {
   await mountLayout(page, shell, { basePath, styles: ".thread-message{min-height:160px}" });
   await loadChatOverviewModules(page, basePath, {
-    contexts: "src/core/deviceContexts.js", inbox: "src/core/inboxView.js", router: "src/core/router.js",
+    contexts: "src/core/deviceContexts.js", inbox: "src/core/inboxView.js",
+    ui: "src/core/localUiStore.js", uiState: "src/core/localUiState.js",
   });
 }
 
-async function seedChat(readThrough) {
-  const { cache } = window.__layoutModules;
+async function seedChat({ readThrough, unpinned }) {
+  const { cache, ui, uiState } = window.__layoutModules;
   const deviceId = "opening-device", projectId = "opening-project", entityId = "project-run";
   const now = new Date().toISOString();
   const agent = { id: "coordinator", name: "Build", topic: "Chat landing", ordinal: 1, provider: "codex",
@@ -35,15 +36,24 @@ async function seedChat(readThrough) {
   await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { items: [], runs: [row] });
   await cache.writeCached({ deviceId, entityId, kind: "row" }, row);
   await cache.writeCached(address, { items, deliveredSequence: 30 });
-  window.__landChatPull = async () => {
-    items.unshift(message(1, "Older page\n\n```js\n" + "const value = 1;\n".repeat(42) + "```"));
-    items.push(message(31, "Newer page"));
-    await cache.writeCached(address, { items, deliveredSequence: 31 });
-  };
-  window.__landChatPush = async () => {
-    items.push(message(32, "New push"));
-    await cache.writeCached(address, { items, deliveredSequence: 32 });
-  };
+  if (unpinned) await ui.writeUiRecord(uiState.uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" }), { pinned: false });
+}
+
+async function publishCachedRows(page, { older, newer }) {
+  await page.evaluate(async ({ older, newer }) => {
+    const { readCached, writeCached } = window.__layoutModules.cache;
+    const address = { deviceId: "opening-device", entityId: "project-run", kind: "thread", sub: "coordinator" };
+    const { items } = (await readCached(address)).value;
+    const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+    if (older) {
+      items.unshift(message(1, "Older page"));
+      const amended = items.findIndex((item) => item.data.sequence === 8);
+      const code = "Older reply with code\n\n```js\n" + "const value = 1;\n".repeat(42) + "```";
+      items[amended] = message(8, code);
+    }
+    items.push(message(newer, `New message ${newer}`));
+    await writeCached(address, { items, deliveredSequence: newer });
+  }, { older, newer });
 }
 
 async function startCachedShell(hash) {
@@ -75,12 +85,14 @@ async function recordFirstTranscriptFrame(page) {
         const viewport = scroller.getBoundingClientRect();
         const head = panel.querySelector(".rail-head").getBoundingClientRect();
         const top = Math.max(viewport.top, head.bottom);
-        const line = scroller.querySelector(".thread-unread-line")?.getBoundingClientRect();
+        const divider = scroller.querySelector(".thread-unread-line");
+        const line = divider?.getBoundingClientRect();
         const newest = last?.getBoundingClientRect();
         resolve({
           scrollTop: scroller.scrollTop,
           bottomGap: scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
           lineVisible: Boolean(line && line.top >= top && line.bottom <= viewport.bottom),
+          lineBefore: Number(divider?.nextElementSibling?.dataset.sequence),
           newestVisible: Boolean(newest && newest.top >= top && newest.bottom <= viewport.bottom),
         });
       };
@@ -136,7 +148,7 @@ it.each([
   await session.withPage(async ({ page, basePath }) => {
     page.setDefaultTimeout(5000);
     await loadShell(page, basePath);
-    await page.evaluate(seedChat, unread ? firstUnread - 1 : 30);
+    await page.evaluate(seedChat, { readThrough: unread ? firstUnread - 1 : 30, unpinned: route === "project face" });
     if (route === "direct reload") {
       await page.evaluate((hash) => history.replaceState(null, "", hash), chatHash);
       await page.reload();
@@ -146,13 +158,15 @@ it.each([
     if (route === "inbox") await page.evaluate(startCachedShell, "#/inbox");
     await recordFirstTranscriptFrame(page);
     if (route === "direct reload") await page.evaluate(startCachedShell);
-    if (route === "project face") await page.locator('[data-agent="coordinator"]').click();
+    if (route === "project face") await page.locator('.rail-unpinned [data-agent="coordinator"]').click();
     if (route === "inbox") await page.locator(".inbox-project-agent").click();
     await page.waitForSelector('#rail-body .thread-message[data-sequence="30"]');
     const first = await page.evaluate(() => window.__firstChatFrame);
     expect(first.scrollTop).toBeGreaterThan(0);
-    if (unread) expect(first.lineVisible).toBe(true);
-    else {
+    if (unread) {
+      expect(first.lineVisible).toBe(true);
+      expect(first.lineBefore).toBe(firstUnread);
+    } else {
       expect(first.bottomGap).toBeLessThanOrEqual(1);
       expect(first.newestVisible).toBe(true);
     }
@@ -160,10 +174,10 @@ it.each([
     await frames(page);
     await growCachedImage(page, basePath, unread);
     await expectLanding(page, unread);
-    if (route === "direct reload") return;
-
-    await page.evaluate(() => window.__landChatPull());
+    await publishCachedRows(page, { older: true, newer: 31 });
     await page.waitForSelector('#rail-body .thread-message[data-sequence="31"]');
+    expect(await page.locator("#rail-body .thread-earlier").count()).toBe(1);
+    expect(await page.locator('#rail-body [data-sequence="8"] pre').count()).toBe(1);
     const landedTop = await expectLanding(page, unread);
     const body = page.locator("#rail-body");
     await body.hover();
@@ -171,7 +185,7 @@ it.each([
     await page.waitForFunction((top) => document.querySelector("#rail-body").scrollTop < top, landedTop);
     await frames(page);
     const readerTop = (await currentPosition(page)).scrollTop;
-    await page.evaluate(() => window.__landChatPush());
+    await publishCachedRows(page, { older: false, newer: 32 });
     await page.waitForSelector('#rail-body .thread-message[data-sequence="32"]');
     await frames(page);
     expect((await currentPosition(page)).scrollTop).toBe(readerTop);

@@ -678,7 +678,7 @@ export function createWriteOperationService(options) {
     await worker.reconcile();
   }
   return {
-    submit, enqueueBatch, cancelUnsentBatch, bind, handleFrame, supports,
+    ready, submit, enqueueBatch, cancelUnsentBatch, bind, handleFrame, supports,
     reconcile: () => worker.reconcile(),
     async checkAgain(id) {
       if (id) {

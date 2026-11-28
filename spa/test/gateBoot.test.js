@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBIndex, IDBKeyRange } from "fake-indexeddb";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -115,10 +115,13 @@ const tick = () => new Promise((done) => setTimeout(done, 5));
 // about the workspace and capture rows.
 const railEntries = () => [...document.querySelectorAll("#inbox-list .inbox-entry:not(.inbox-project-agent)")].map((row) => row.dataset.key);
 const unreachableMark = () => document.querySelector(".device-picker-unreachable");
+const accountId = "592ab99a-62d1-4c17-8c95-3148fcbb6726";
 
 beforeEach(async () => {
   vi.resetModules();
   vi.clearAllMocks();
+  // A fresh document has no cache writers from the other boot fixtures.
+  vi.stubGlobal("BroadcastChannel", undefined);
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   localStorage.clear();
@@ -127,6 +130,7 @@ beforeEach(async () => {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
   account.fetchDevices.mockImplementation(() => new Promise(() => {}));
   account.openSession.mockImplementation(() => new Promise(() => {}));
+  account.startCacheSync.mockReset();
   ({ App } = await import("../src/app.js"));
   ({ writeCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   ({ stopFeed } = await import("../src/core/taskFeed.js"));
@@ -142,6 +146,9 @@ afterEach(async () => {
   // test's cache writes the way another tab would; unmounted, it paints nothing
   // into that test's page.
   (await import("../src/core/inboxView.js")).unmountInboxList();
+  document.querySelector('meta[name="build-account-id"]')?.remove();
+  await (await import("../src/core/writeOperationRuntime.js")).resetWriteOperationRuntime();
+  vi.unstubAllGlobals();
 });
 
 describe("booting from the cache", () => {
@@ -156,6 +163,39 @@ describe("booting from the cache", () => {
     expect(document.getElementById("devpick").hidden).toBe(false);
     // The account list is still in flight — nothing here waited on it.
     expect(App.devices.map((each) => each.id)).toEqual(["dev-1"]);
+  });
+
+  it("hydrates each cached device's operation namespace once and shows pending overlays on the first paint", async () => {
+    const { createWriteOperationCache } = await import("../src/core/writeOperationCache.js");
+    const { operationNamespace } = await import("../src/core/writeOperationProjection.js");
+    document.head.insertAdjacentHTML("beforeend", `<meta name="build-account-id" content="${accountId}">`);
+    const devices = [device("dev-1"), device("dev-2")];
+    await warmCache(devices);
+    const scopes = devices.map(({ id }) => ({ accountId, deviceId: id, principalId: `user:${accountId}` }));
+    const workspaces = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
+    await createWriteOperationCache(scopes[0]).put({
+      operationId: "pending-rename", revision: 1, state: "accepted", acknowledged: true, overlayActive: true,
+      overlay: [{ address: workspaces, kind: "upsert", value: { ...cachedWorkspace, name: "Pending checkout name" } }],
+    });
+    const readIndex = vi.spyOn(IDBIndex.prototype, "getAll");
+    let namespacesAtReaderStart;
+    let firstPaint;
+    account.startCacheSync.mockImplementation(() => {
+      namespacesAtReaderStart = readIndex.mock.calls.flatMap(([namespace], index) =>
+        readIndex.mock.contexts[index].name === "namespace" ? [namespace] : []);
+    });
+    account.fetchDevices.mockImplementation(() => {
+      firstPaint = document.querySelector('[data-key="workspace:dev-1/ws-1"]')?.textContent;
+      return new Promise(() => {});
+    });
+    try {
+      void boot();
+      await vi.waitFor(() => expect(account.fetchDevices).toHaveBeenCalledTimes(1));
+      expect(firstPaint).toContain("Pending checkout name");
+      expect(namespacesAtReaderStart.sort()).toEqual(scopes.map(operationNamespace).sort());
+    } finally {
+      readIndex.mockRestore();
+    }
   });
 
   it("gates as it always has when the cache has nothing to paint", async () => {

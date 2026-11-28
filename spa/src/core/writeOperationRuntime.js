@@ -32,7 +32,7 @@ export function deviceWriteOperations(deviceId) {
 export async function restoreWriteOperations(devices) {
   await Promise.all(devices.map(async ({ id }) => {
     const service = deviceWriteOperations(id);
-    try { await service?.list(); }
+    try { await service?.ready; }
     catch { /* Storage refusal is surfaced by the action; cached paint remains available. */ }
   }));
 }

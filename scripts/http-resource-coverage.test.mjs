@@ -499,8 +499,8 @@ const sourceFingerprintParts = {
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["f91893fa", "a8a72805", "d4edc518", "cf01ddd6", "d1b2fb80", "2db8d877", "af171ff4", "cd082a67"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
-  // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
-  "core/writeOperations.js": ["eb7e34fc", "2e61c22a", "e6a302e2", "fc74cb2c", "99a7d032", "0ea012eb", "9c4adb8f", "ebd06bfc"],
+  // #1201 exposes the existing initialization promise to cache boot.
+  "core/writeOperations.js": ["e3e3f2bc", "4e540a17", "ee398e17", "f718c9be", "a22c04d3", "5bf19cdb", "f1f336bd", "02a63748"],
   "push.js": ["db12600b", "f62bc315", "b24af0c7", "8d28b42d", "e7624b01", "0ac3ec3a", "d5efdc06", "9818f06a"],
   // #1065: browser teardown follows its containing overlay or page host; filesystem RPC edges are unchanged.
   "sheets/browser.js": ["26b0a0d1", "9c17f7c3", "0d7f7b63", "f387fc4e", "2067502a", "c2f7b754", "e996da65", "07b55e58"],

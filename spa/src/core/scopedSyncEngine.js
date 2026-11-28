@@ -10,7 +10,13 @@ const MAX_RESTARTS = 3;
 const MAX_SNAPSHOT_RECORDS = 100_000;
 const MAX_SNAPSHOT_PAGES = 1000;
 const identity = (scope) => JSON.stringify(scope);
-const pageParams = (page) => page ? { page } : {};
+// The bridge leases one device watermark for five minutes and enforces a
+// byte limit on every page. After the first page, use its full row allowance
+// to spend fewer round trips on the same staged snapshot.
+const snapshotParams = (scope, page) => {
+  if (!page) return {};
+  return scope.kind === "device" ? { page, limit: 500 } : { page };
+};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
 const cursorOf = (held) => held?.cursor ?? null;
 const caughtUp = (held, answer) => Boolean(held?.cursor && !held.snapshotRequired
@@ -90,7 +96,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     let page, first, pages = 0;
     const records = [];
     do {
-      const answer = await read(entry, token, "sync.snapshot", pageParams(page));
+      const answer = await read(entry, token, "sync.snapshot", snapshotParams(entry.scope, page));
       pages += 1;
       if (!answer) return null;
       if (answer.status === "resync_required") return { resync: answer };

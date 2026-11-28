@@ -258,15 +258,59 @@ it("paints a standing workspace operation once and retains its pending facts thr
   } finally { release(); }
 });
 
-it("finishes a multi-day HTTPS catch-up within the device snapshot lease and repaints from the cache", async () => {
+it("finishes a multi-day HTTPS catch-up within the device snapshot lease", async () => {
   const { httpsDeviceSnapshot } = await import("./fixtures/httpsDeviceSnapshot.js");
-  const fixture = await httpsDeviceSnapshot();
+  const fixture = httpsDeviceSnapshot();
+  const session = await fixture.openSession();
+  session.allowRefresh();
   try {
-    expect(await startEngine(fixture.request)).toBe(true);
+    expect(await startEngine(session.rawCall)).toBe(true);
     fixture.advanceThreeDays();
     const [recovered] = await engine.foreground();
-    expect({ recovered, ...fixture.counts }).toMatchObject({ recovered: true, expiries: 0, overBudget: 1 });
+    expect({ recovered, ...fixture.counts }).toEqual({ recovered: true, pages: 9, returned: 3501, expiries: 0, overBudget: 1 });
     const last = await cache.readCached({ ...address("sync-device-record"), sub: JSON.stringify(["identity", "agent-3499"]) });
     expect(last?.value?.row.name).toBe("Agent 3499");
-  } finally { fixture.close(); }
+  } finally { session.close(); }
 });
+
+it("settles the connection ring on HTTPS reconnect and starts a new snapshot on reload", async () => {
+  const { httpsDeviceSnapshot } = await import("./fixtures/httpsDeviceSnapshot.js");
+  const { greetLiveBridge } = await import("../src/connection.js");
+  const sync = await import("../src/core/cacheSync.js");
+  vi.stubGlobal("navigator", { locks: { request: (_name, acquire) => Promise.resolve().then(acquire) } });
+  // The tab pauses again after a 500-row continuation. Its next request
+  // crosses the original lease, and the already-cleared cursor must allow
+  // an immediate fresh lease before the connection pass releases the ring.
+  let paused = false;
+  const fixture = httpsDeviceSnapshot(650, { afterPage({ offset, end, elapse }) {
+    if (!paused && end - offset === 500) { paused = true; elapse(300_000); }
+  } });
+  const transitions = [];
+  const stopWatch = sync.subscribeConnectionSync((active) => transitions.push(active));
+  const connect = async () => {
+    const session = await fixture.openSession();
+    await greetLiveBridge(contexts.adoptDeviceSession(session), { suppressFailure: false });
+  };
+  const settled = () => vi.waitFor(() => expect(transitions).toEqual([false, true, false]), { timeout: 10000 });
+  try {
+    await connect();
+    sync.startCacheSync();
+    await settled();
+    fixture.advanceThreeDays();
+    transitions.splice(1);
+    await connect();
+    await settled();
+    expect(fixture.counts).toMatchObject({ pages: 7, returned: 1251, overBudget: 1, expiries: 1 });
+    // A new lock/engine owner starts without the old in-memory continuity
+    // proof. Keep IndexedDB populated as it would be after a page reload.
+    sync.stopCacheSync();
+    transitions.splice(1);
+    sync.startCacheSync();
+    await settled();
+    expect(fixture.counts).toMatchObject({ pages: 10, returned: 1901, overBudget: 1, expiries: 1 });
+    const held = await cache.readCached({ ...address("sync-cursor"), sub: JSON.stringify(scope) });
+    expect(held?.value?.appliedHead).toBe("3601");
+  } finally {
+    stopWatch(); sync.stopCacheSync(); contexts.contextFor(deviceId)?.session?.close();
+  }
+}, 30000);

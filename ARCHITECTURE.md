@@ -5226,7 +5226,10 @@ push content or chip markup.
   transaction. Browsers without Web Locks retain legacy task reads.
   The engine stages snapshot pages before publication, then drains changes
   from the snapshot's opaque cursor through each fixed-head continuation.
-  Every continuation keeps that run's original request cursor; the latest
+  Device snapshots start with the bridge's default page and request up to 500
+  rows per continuation under the same byte ceiling and five-minute lease.
+  An expired lease can retry even before any cursor has been committed.
+  Every changes continuation keeps that run's original request cursor; the latest
   committed cursor supplies only the transaction's comparison baseline.
   Historical upserts carry the current entity projection, so a null current
   row is applied as a tombstone even on an older upsert event. Invalidations

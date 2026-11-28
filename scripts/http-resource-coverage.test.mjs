@@ -427,8 +427,8 @@ const sourceFingerprintParts = {
   "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
   // #997 scopedSyncDiagnostics.js:4: device is a closed diagnostic label, never a resource selector.
   "core/scopedSyncDiagnostics.js": ["6cc8fdb6", "b09c4e34", "fe7d1304", "b21f55d1", "28d9740b", "71c566cd", "db179dcd", "ef3bd1bf"],
-  // #997 review scopedSyncEngine.js:62,147: declined publications retry bounded recovery through the same three sync queries; no new dispatch site.
-  "core/scopedSyncEngine.js": ["2f3ab7a1", "b5bad14b", "d4f774c0", "dbbec9c6", "124d8d1d", "05076d00", "a441b99d", "2b2a333e"],
+  // #1202: device snapshot continuations use the existing sync.snapshot limit parameter.
+  "core/scopedSyncEngine.js": ["f9d36722", "e82e56dd", "e41be11c", "707affdf", "ffaea197", "e027c394", "f0589aed", "e6f44be1"],
   // #1005: staged-secret draft metadata and cache reads use explicit secrets.* methods.
   // #1006 stage/revoke are the two finite methods forwarded by agentRail's
   // reviewed secret draft dispatcher; unavailable live capability rejects.

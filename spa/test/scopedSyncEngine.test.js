@@ -232,8 +232,8 @@ it("resnapshots device leases and preserves large opaque page and change continu
   expect(await engine.catchUp(device)).toBe(true);
   expect(request.mock.calls.map(([method]) => method)).toEqual([
     "sync.snapshot", "sync.snapshot", "sync.snapshot", "sync.snapshot", "sync.changes", "sync.changes"]);
-  expect(request.mock.calls[1][1]).toEqual({ scope: device, page });
-  expect(request.mock.calls[3][1]).toEqual({ scope: device, page });
+  expect(request.mock.calls[1][1]).toEqual({ scope: device, page, limit: 500 });
+  expect(request.mock.calls[3][1]).toEqual({ scope: device, page, limit: 500 });
   expect(request.mock.calls[5][1]).toEqual({ scope: device, cursor: "opaque-S", continuation });
   expect(store.publish.mock.calls.map(([batch]) => batch.expectedCursor)).toEqual([null, "opaque-S", "C1"]);
   expect(store.reset).toHaveBeenCalledTimes(1);

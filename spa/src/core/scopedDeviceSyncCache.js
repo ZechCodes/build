@@ -423,8 +423,15 @@ export function createScopedDeviceSyncCache({ deviceId, scope, bridgeIdentity, a
       deviceId, records, response, snapshot, bridgeIdentity, cursor, accept, captured, active, expectedCursor }));
   }
   async function reset({ capture: captured, expectedCursor, accept = () => true } = {}) {
-    return mergeCachedRecordsTogether([cursor], ([held]) => accept() && currentCapture(captured, deviceId, active)
-      && (held?.value?.cursor ?? null) === (expectedCursor ?? null) ? [DELETE_CACHED_RECORD] : null);
+    // An expired snapshot can have no cursor yet. A guarded, committed
+    // no-op still admits the next lease, just as deleting an old cursor does.
+    let admitted = false, committed = false;
+    await mergeCachedRecordsTogether([cursor], ([held]) => {
+      admitted = accept() && currentCapture(captured, deviceId, active)
+        && (held?.value?.cursor ?? null) === (expectedCursor ?? null);
+      return admitted ? [DELETE_CACHED_RECORD] : null;
+    }, { onCommit: () => { committed = admitted; } });
+    return committed;
   }
   return { capture, publish, reset, readCursor: async () => (await readCanonicalCached(cursor))?.value };
 }
